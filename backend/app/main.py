@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routers.chat import router as chat_router
 from .dependencies import get_chatter
+from .utility.llama import Chatter
 
 
 @asynccontextmanager
@@ -29,21 +30,50 @@ for port in range(5173, 5181):  # 5181 to include 5180
         [
             f"http://localhost:{port}",
             f"http://127.0.0.1:{port}",
+            f"http://[::1]:{port}",  # IPv6 localhost
         ]
     )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Allow explicitly provided origins (comma-separated)
+extra_origins = os.getenv("ADDITIONAL_CORS_ORIGINS", "").strip()
+if extra_origins:
+    for origin in extra_origins.split(","):
+        origin = origin.strip()
+        if origin:
+            allowed_origins.append(origin)
+
+allow_all = os.getenv("CORS_ALLOW_ALL", "0").lower() in ("1", "true", "yes")
+
+if allow_all:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,  # required when using wildcard origins
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/status")
+def status():
+    """Model/load status for UI.
+
+    Returns: { state: unloaded|loading|ready|failed, free_vram_mib, min_required_vram_mib }
+    """
+    return Chatter.get_status()
 
 
 app.include_router(chat_router)

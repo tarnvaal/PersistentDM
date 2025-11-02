@@ -144,6 +144,40 @@ class Chatter:
         except Exception:
             return 10
 
+    @classmethod
+    def get_status(cls) -> dict:
+        """Return model load status for UI/health.
+
+        States:
+        - unloaded: no initialization attempted
+        - loading: initialization in progress
+        - ready: model loaded and ready
+        - failed: initialization completed with error
+        """
+        state = "unloaded"
+        if not cls._initialized:
+            state = "unloaded"
+        else:
+            if not cls._ready_event.is_set():
+                state = "loading"
+            else:
+                if cls._llm is not None:
+                    state = "ready"
+                else:
+                    state = "failed"
+
+        info: dict[str, object] = {
+            "state": state,
+            "has_error": cls._init_error is not None,
+        }
+        try:
+            free_vram = get_free_vram_mib()  # may be None
+        except Exception:
+            free_vram = None
+        info["free_vram_mib"] = free_vram
+        info["min_required_vram_mib"] = MIN_FREE_VRAM_MIB
+        return info
+
     def chat(self, user_input: str, world_facts: str | None = None) -> str:
         # record player message
         self.history.add_message(
