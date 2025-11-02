@@ -189,6 +189,23 @@ function App() {
                     role="region"
                     aria-labelledby={`details-button-${idx}`}
                   >
+                    {item.relevance && item.relevance.saved && (
+                      <div className="mb-2">
+                        <div className="text-xs uppercase tracking-wide opacity-70 mb-1">Saved this turn</div>
+                        <ul className="list-disc list-inside space-y-1">
+                          <li className="text-xs">
+                            <span className="opacity-80">[{item.relevance.saved.type}]</span> {item.relevance.saved.summary}
+                            {item.relevance.saved.entities && item.relevance.saved.entities.length > 0 && (
+                              <span className="opacity-60"> (entities: {item.relevance.saved.entities.join(", ")})</span>
+                            )}
+                            {typeof item.relevance.saved.confidence === "number" && (
+                              <span className="opacity-60"> — conf {item.relevance.saved.confidence.toFixed ? item.relevance.saved.confidence.toFixed(2) : item.relevance.saved.confidence}</span>
+                            )}
+                          </li>
+                        </ul>
+                        <div className="h-px bg-[#344046] my-2" />
+                      </div>
+                    )}
                     {item.relevance && (item.relevance.memories?.length > 0 || item.relevance.npcs?.length > 0) && (
                       <div className="mb-2">
                         {item.relevance.memories?.length > 0 && (

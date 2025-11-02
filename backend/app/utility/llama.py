@@ -337,6 +337,79 @@ class Chatter:
         )
         return result
 
+    def infer_player_movement(
+        self,
+        current_location: dict | None,
+        exits: list[dict],
+        user_message: str,
+        dm_response: str,
+        debug: bool = False,
+    ) -> dict | None:
+        """Ask the LLM if the player moved to a connected location.
+
+        Returns a dict like:
+          {"move": true, "target": "LocationName", "reason": "...", "confidence": 0.0-1.0}
+        or {"move": false, "confidence": 0.0-1.0}
+        """
+        system = (
+            "You are a movement detector for a text RPG.\n"
+            "Given the player's message and the DM reply, decide if the player moved to one of the available exits.\n"
+            "Return ONLY JSON.\n"
+            'Schema: {"move": bool, "target": string|null, "reason": string, "confidence": number}'
+        )
+        loc_name = (current_location or {}).get("name", "unknown")
+        exit_lines = []
+        for e in exits:
+            tgt = e.get("to_location", "")
+            desc = e.get("description", "")
+            if tgt:
+                exit_lines.append(f"- {desc} -> {tgt}")
+        exits_text = "\n".join(exit_lines) if exit_lines else "(none)"
+
+        user = (
+            f"Current location: {loc_name}\n"
+            f"Available exits (description -> target):\n{exits_text}\n\n"
+            f"Player: {user_message}\nDM: {dm_response}\n\n"
+            "Answer with the JSON object."
+        )
+        return self._complete_json(system, user, "infer_player_movement", debug=debug)
+
+    def extract_graph_changes(
+        self,
+        user_message: str,
+        dm_response: str,
+        current_location_name: str | None = None,
+        debug: bool = False,
+    ) -> dict | None:
+        """Ask the LLM to suggest new locations and connections mentioned this turn.
+
+        Returns a dict like:
+          {
+            "new_locations": [{"name": str, "description": str}],
+            "new_connections": [{"from": str, "to": str, "description": str, "verb": str|null}],
+            "confidence": number
+          }
+        or {"new_locations": [], "new_connections": [], "confidence": 0.0}
+        """
+        system = (
+            "You are a world graph extractor.\n"
+            "From the player's message and DM reply, extract any NEW locations and NEW connections.\n"
+            "Keep it conservative; only include clear, explicit additions.\n"
+            "Return ONLY JSON with keys new_locations (list), new_connections (list), confidence (0-1).\n"
+            "Location names should be concise canonical names (e.g., 'Town Square').\n"
+            "Connections should include a short description of the route/means (e.g., 'a creaking wooden door')."
+        )
+        user = (
+            (
+                f"Current location: {current_location_name}\n"
+                if current_location_name
+                else ""
+            )
+            + f"Player: {user_message}\nDM: {dm_response}\n\n"
+            + "Return the JSON object."
+        )
+        return self._complete_json(system, user, "extract_graph_changes", debug=debug)
+
     def _complete_json(
         self, system: str, user: str, request_type: str, debug: bool = False
     ) -> dict | None:

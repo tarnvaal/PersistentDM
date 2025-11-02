@@ -137,3 +137,31 @@ def format_npc_cards(
         line = f"- {name}: rel={rel}; last_seen={loc}; intent={intent}"
         cards.append(line[:char_cap])
     return "\n".join(cards)
+
+
+def format_location_context(world_memory: WorldMemory, char_cap: int = 600) -> str:
+    """Format player's current location and available exits.
+
+    Keeps output compact and capped for prompt budget.
+    """
+    loc = world_memory.location_graph.get_current_location()
+    if not loc:
+        return ""
+
+    lines: List[str] = ["Location Context:", f"You are at: {loc.name}"]
+    desc = (loc.description or "").strip()
+    if desc:
+        lines.append(f"Description: {desc}")
+
+    if loc.connections:
+        lines.append("Exits:")
+        for edge in loc.connections:
+            lines.append(f"- {edge.description} (leads to {edge.to_location})")
+
+    if loc.npcs_present:
+        lines.append("People here: " + ", ".join(loc.npcs_present))
+
+    out = "\n".join(lines)
+    if len(out) > char_cap:
+        return out[:char_cap] + "..."
+    return out

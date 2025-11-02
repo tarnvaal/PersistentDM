@@ -16,6 +16,8 @@ PersistentDM implements an AI dungeon master for text-based role-playing games. 
 - Llama.cpp integration for local LLM inference
 - Automated development environment setup
  - Optional debug fields in responses for the dev UI (context snippets and relevance scores)
+ - Location graph (locations + exits) injected into prompts for spatial grounding
+ - LLM-guided movement detection and dynamic graph growth (confidence-gated)
 
 ## Architecture
 
@@ -24,6 +26,7 @@ PersistentDM implements an AI dungeon master for text-based role-playing games. 
 - **Framework**: FastAPI with automatic API documentation
 - **LLM Integration**: llama-cpp-python with CUDA acceleration
 - **World Memory**: Vector-based memory system using embeddings for similarity search
+ - **World Graph**: In-memory location graph (locations + exits) used to ground navigation; included in prompt context
 - **Conversation Orchestration**: `ConversationService` composes `Chatter` and `WorldMemory`, retrieves relevant memories and NPC snapshots, formats World Facts + NPC Cards, injects them into the LLM call, and persists new memories
 - **Model**: Harbinger-24B-GGUF (quantized for ~23GB VRAM usage)
 
@@ -142,11 +145,12 @@ See `requests.rest` for example API calls.
 - Frontend POSTs `{ "message": string }` to `/chat`
 - Backend router delegates to `ConversationService.handle_user_message`
 - Service retrieves relevant memories (weighted by similarity/recency/type) and NPC snapshots
-- Service formats World Facts and NPC Cards and injects them as a transient system message
-- `Chatter.chat` generates the DM reply; the service analyzes the turn and stores new durable memories when confidence is high
-- Response returns `{ "reply": string, "context"?: string | null, "relevance"?: object | null }`
+- Service formats World Facts, NPC Cards, and the current Location Context (location + exits) and injects them as a transient system message
+- `Chatter.chat` generates the DM reply; the service analyzes the turn and stores new durable memories when confidence is high; the service also uses the LLM to conservatively infer player movement and propose new locations/exits to grow the graph
+ - Response returns `{ "reply": string, "context"?: string | null, "relevance"?: object | null }`
   - `context` is the exact world context injected into the model for that turn
   - `relevance` contains lightweight memory/NPC relevance info
+  - `relevance.saved` (when present) summarizes what memory was persisted this turn (type, summary, entities, confidence)
   - These fields are intended for development/debugging and are shown in the dev UI
 
 ## Testing
