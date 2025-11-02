@@ -119,12 +119,6 @@ function App() {
   const [strideWords, setStrideWords] = useState(1000);
   const [strideTouched, setStrideTouched] = useState(false);
 
-  useEffect(() => {
-    const el = messagesRef.current;
-    if (!el) return;
-    // Scroll to bottom on new messages
-    el.scrollTop = el.scrollHeight;
-  }, [history]);
 
   // Load saved ingests when modal opens
   useEffect(() => {
