@@ -1,5 +1,103 @@
 import { useMemo, useState, useRef, useEffect } from "react";
 
+// Approximate token estimator and sliding-window ingestor
+class TextIngestor {
+  constructor(text, options, callbacks) {
+    this.text = text || "";
+    this.options = {
+      contextWindow: 32000, // tokens
+      baseWindow: 16000,
+      worldWindow: 16000,
+      stride: 8000,
+      checkpointEvery: 10,
+      ...options,
+    };
+    this.callbacks = callbacks || {};
+  }
+
+  static estimateTokens(text) {
+    // Very rough: ~1.3 tokens per word
+    const words = (text.trim().match(/\S+/g) || []).length;
+    return Math.max(0, Math.round(words * 1.3));
+  }
+
+  static countLines(text) {
+    if (!text) return 0;
+    const m = text.match(/\n/g);
+    return (m ? m.length : 0) + 1;
+  }
+
+  async run() {
+    const start = performance.now();
+    const totalWords = (this.text.trim().match(/\S+/g) || []).length;
+    const totalLines = TextIngestor.countLines(this.text);
+    const approxTokens = TextIngestor.estimateTokens(this.text);
+
+    // Split text by words for sliding windows
+    const words = this.text.trim().length ? this.text.split(/\s+/) : [];
+    const tokensPerWord = approxTokens / Math.max(1, totalWords);
+    const windowTokens = this.options.baseWindow; // 16k tokens for source slice
+    const windowWords = Math.max(1, Math.round(windowTokens / Math.max(1, tokensPerWord)));
+    const strideTokens = this.options.stride; // 8k tokens step
+    const strideWords = Math.max(1, Math.round(strideTokens / Math.max(1, tokensPerWord)));
+
+    const totalSteps = Math.max(1, Math.ceil(Math.max(0, words.length - windowWords) / strideWords) + 1);
+    let consumedWords = 0;
+    const checkpoints = [];
+
+    for (let step = 0; step < totalSteps; step++) {
+      const startIdx = step * strideWords;
+      const endIdx = Math.min(words.length, startIdx + windowWords);
+      const chunkWords = words.slice(startIdx, endIdx);
+      const chunkText = chunkWords.join(" ");
+
+      // Advance consumed words by stride (no double counting overlap)
+      consumedWords = Math.min(words.length, step * strideWords + strideWords);
+      const consumedLines = TextIngestor.countLines(words.slice(0, consumedWords).join(" "));
+      const progress = Math.min(1, consumedWords / Math.max(1, words.length));
+
+      if (typeof this.callbacks.onProgress === "function") {
+        this.callbacks.onProgress({
+          progress,
+          step,
+          totalSteps,
+          consumedWords,
+          consumedLines,
+        });
+      }
+
+      // Occasionally emit a naive checkpoint summary
+      if (step % Math.max(1, this.options.checkpointEvery) === 0) {
+        const snippet = chunkText.split(/(?<=[.!?])\s+/).slice(0, 2).join(" ");
+        const summary = snippet || chunkText.slice(0, 200);
+        checkpoints.push({ step, summary });
+        if (typeof this.callbacks.onCheckpoint === "function") {
+          this.callbacks.onCheckpoint({ step, summary });
+        }
+      }
+
+      // Yield to UI
+      // Dynamically decide updates: larger chunks get more UI ticks
+      const uiTicks = Math.min(5, 1 + Math.floor(chunkWords.length / Math.max(1, strideWords / 2)));
+      for (let i = 0; i < uiTicks; i++) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    const ms = Math.max(0, Math.round(performance.now() - start));
+    const result = {
+      totalWords,
+      totalLines,
+      approxTokens,
+      timeMs: ms,
+      checkpoints,
+      steps: totalSteps,
+    };
+    if (typeof this.callbacks.onDone === "function") this.callbacks.onDone(result);
+    return result;
+  }
+}
+
 function App() {
   const apiBase = useMemo(() => {
     const configured = import.meta.env.VITE_API_BASE_URL;
@@ -199,6 +297,17 @@ function App() {
         <div id="controls" className="flex gap-2 mb-2 items-center justify-between">
           <div className="flex items-center gap-2 flex-1">
             <span id="model-status-dot" className="status-dot" aria-label="Model status: unknown" title="Model status: unknown"></span>
+            <button
+              id="btn-paste"
+              type="button"
+              className="inline-flex items-center justify-center w-9 h-9 rounded-[10px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] transition-colors ease-linear hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600] active:translate-y-px"
+              aria-label="Open paste dialog"
+              onClick={() => setPasteOpen(true)}
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -232,6 +341,104 @@ function App() {
                   className="px-4 py-2 my-1 rounded-[20px] max-w-[90%] leading-[1.45] font-medium text-[1.05rem] bg-[#4a555c] text-[#f1f1f1] self-start italic typing"
                 >
                   DM is typing
+                </div>
+              );
+            }
+            if (item.type === "ingest") {
+              const isUser = false;
+              const pct = Math.round((item.progress || 0) * 100);
+              const loopPct = Math.round(((item.loop || 0) % 1) * 100);
+              const meta = item.meta || {};
+              return (
+                <div key={item.id || idx} className={`flex flex-col self-start items-start`}>
+                  <div
+                    className={
+                      `relative px-4 py-2 my-1 rounded-[20px] whitespace-normal break-words leading-[1.45] font-medium text-[1.05rem] pb-8 ` +
+                      "max-w-[90%] min-w-[300px] bg-[#4a555c] text-[#f1f1f1]"
+                    }
+                  >
+                    {item.content}
+                    <div className="absolute left-4 right-4 bottom-2 h-3 rounded-full bg-[#2b3940] overflow-hidden border border-[#3a444a]">
+                      <div
+                        className="h-full bg-[#FF6600] transition-[width] duration-200 ease-linear"
+                        style={{ width: `${Math.min(100, pct)}%` }}
+                      />
+                      {!item.ready && (
+                        <div
+                          className="absolute top-0 bottom-0 h-full bg-white/20"
+                          style={{ left: `${loopPct}%`, width: "20%" }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-1 text-xs opacity-70">
+                    {meta.totalSteps != null && (
+                      <span>Chunk {Math.min((meta.step || 0) + 1, meta.totalSteps)} / {meta.totalSteps} • </span>
+                    )}
+                    {meta.consumedWords != null && <span>{meta.consumedWords} words processed</span>}
+                    {typeof item.etaMs === "number" && (
+                      <span>{" • ETA "}{Math.max(0, Math.floor(item.etaMs/60000))}m {Math.max(0, Math.round((item.etaMs%60000)/1000))}s</span>
+                    )}
+                  </div>
+                  <div className="mt-2 text-sm bg-[#1e2a30] text-[#c9d1d9] rounded-lg p-3 w-[95%] max-w-[95%]">
+                      <div className="text-xs uppercase tracking-wide opacity-70 mb-1">Checkpoints</div>
+                      <ul className="space-y-1">
+                        {(item.checkpoints || []).map((c, i) => {
+                          const expanded = (item.cpExpanded && item.cpExpanded[i]) || false;
+                          const labelPrefix = c.kind === "saved" ? "Saved" : c.kind === "hygiene" ? "Hygiene" : c.kind === "info" ? "Info" : "Summary";
+                          return (
+                            <li key={`${c.kind || 'cp'}-${i}`} className="text-xs">
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-2 text-left hover:opacity-90"
+                                onClick={() => setHistory((h) => h.map((m) => (
+                                  m.id === item.id ? { ...m, cpExpanded: { ...(m.cpExpanded || {}), [i]: !expanded } } : m
+                                )))}
+                              >
+                                <span className="inline-flex items-center justify-center w-4 h-4 rounded-[4px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9]">
+                                  {expanded ? "−" : "+"}
+                                </span>
+                                <span className="opacity-80">{labelPrefix}:</span>
+                                <span> {c.summary}</span>
+                              </button>
+                              {expanded && (
+                                <div className="mt-1 ml-6 opacity-80">
+                                  {c.kind === "saved" && (
+                                    <div>
+                                      <div>Type: {c.data?.type}</div>
+                                      {Array.isArray(c.data?.entities) && c.data.entities.length > 0 && (
+                                        <div>Entities: {c.data.entities.join(", ")}</div>
+                                      )}
+                                      {typeof c.data?.confidence === "number" && (
+                                        <div>Confidence: {c.data.confidence}</div>
+                                      )}
+                                    </div>
+                                  )}
+                                  {c.kind === "info" && (
+                                    <div>
+                                      <div>Tokens≈ {c.data?.approxTokens} • Window {c.data?.windowWords}w • Stride {c.data?.strideWords}w</div>
+                                      <div>Steps {c.data?.totalSteps} • Checkpoint every ~{c.data?.checkpointTokenInterval} tokens</div>
+                                    </div>
+                                  )}
+                                  {c.kind === "hygiene" && (
+                                    <div>
+                                      <div>Merged: {c.data?.merged ?? 0}</div>
+                                      <div>Pruned nodes: {c.data?.pruned_nodes ?? 0}</div>
+                                      <div>Pruned edges: {c.data?.pruned_edges ?? 0}</div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                      {item.stats && (
+                        <div className="mt-2 text-xs opacity-80">
+                          Words: {item.stats.totalWords} • Lines: {item.stats.totalLines} • Tokens≈ {item.stats.approxTokens ?? "?"} • Time: {Math.round((item.stats.timeMs || 0)/1000)}s
+                        </div>
+                      )}
+                  </div>
                 </div>
               );
             }
@@ -379,6 +586,147 @@ function App() {
             <div className="px-4 py-3 border-b border-[#3a454b] flex items-center justify-between">
               <h2 id="paste-title" className="text-[#f0f0f0] text-base font-semibold">Paste text</h2>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
+                  onClick={async () => {
+                    const localText = pasteText;
+                    setPasteOpen(false);
+                    const id = `ingest-${Date.now()}`;
+                    setHistory((h) => [
+                      ...h,
+                      { role: "assistant", id, type: "ingest", content: "Processing pasted text…", ready: false, progress: 0, loop: 0, stats: null, checkpoints: [], etaMs: null },
+                    ]);
+
+                    // Upload text to backend
+                    let upload;
+                    try {
+                      const res = await fetch(`${apiBase}/ingest/upload`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ text: localText }),
+                      });
+                      upload = await res.json();
+                    } catch (e) {
+                      setHistory((h) => h.map((m) => (m.id === id ? { ...m, content: `[Error] Upload failed`, ready: true } : m)));
+                      return;
+                    }
+
+                    const totalWords = upload.totalWords || 0;
+                    const ingestStart = Date.now();
+                    let t0Second = null; // timestamp when second chunk starts
+                    let wordsAtSecondStart = 0;
+
+                    // Loop progress animation
+                    let loopVal = 0;
+                    const loopTimer = setInterval(() => {
+                      loopVal = (loopVal + 0.08) % 1;
+                      setHistory((h) => h.map((m) => (m.id === id ? { ...m, loop: loopVal } : m)));
+                    }, 150);
+
+                    // Open SSE stream
+                    const es = new EventSource(`${apiBase}/ingest/stream?id=${encodeURIComponent(upload.id)}`);
+                    es.addEventListener("info", (ev) => {
+                      try {
+                        const info = JSON.parse(ev.data || "{}");
+                        const summary = `~${info.approxTokens ?? "?"} tokens • window ${info.windowWords ?? "?"}w stride ${info.strideWords ?? "?"}w • steps ${info.totalSteps ?? "?"}`;
+                        setHistory((h) => h.map((m) => (
+                          m.id === id ? { ...m, checkpoints: [...(m.checkpoints || []), { kind: "info", summary, data: info }], stats: { ...(m.stats||{}), approxTokens: info.approxTokens } } : m
+                        )));
+                      } catch (_) {}
+                    });
+
+                    const closeES = () => { try { es.close(); } catch (_) {} };
+
+                    es.addEventListener("progress", (ev) => {
+                      try {
+                        const data = JSON.parse(ev.data || "{}");
+                        const step = Number(data.step || 0);
+                        const totalSteps = Number(data.totalSteps || 1);
+                        const consumedWords = Number(data.consumedWords || 0);
+                        const consumedLines = Number(data.consumedLines || 0);
+                        const progress = Number(data.progress || 0);
+
+                        // ETA: start timing after first chunk completes; use avg speed since second chunk start
+                        if (step === 1 && t0Second == null) {
+                          t0Second = Date.now();
+                          wordsAtSecondStart = consumedWords;
+                        }
+                        let etaMs = null;
+                        if (t0Second != null && consumedWords > wordsAtSecondStart) {
+                          const elapsed = Date.now() - t0Second;
+                          const processed = consumedWords - wordsAtSecondStart;
+                          const remaining = Math.max(0, totalWords - consumedWords);
+                          const speed = processed / Math.max(1, elapsed); // words per ms
+                          etaMs = speed > 0 ? Math.round(remaining / speed) : null;
+                        }
+
+                        setHistory((h) => h.map((m) => (
+                          m.id === id ? { ...m, progress, etaMs, meta: { step, totalSteps, consumedWords, consumedLines } } : m
+                        )));
+                      } catch (_) {}
+                    });
+
+                    es.addEventListener("saved", (ev) => {
+                      try {
+                        const s = JSON.parse(ev.data || "{}");
+                        setHistory((h) => h.map((m) => (
+                          m.id === id ? { ...m, checkpoints: [...(m.checkpoints || []), { kind: "saved", step: (m.meta?.step ?? 0), summary: s.summary, data: s }] } : m
+                        )));
+                      } catch (_) {}
+                    });
+
+                    es.addEventListener("checkpoint", (ev) => {
+                      try {
+                        const cp = JSON.parse(ev.data || "{}");
+                        setHistory((h) => h.map((m) => (
+                          m.id === id ? { ...m, checkpoints: [...(m.checkpoints || []), { kind: "checkpoint", ...cp }] } : m
+                        )));
+                      } catch (_) {}
+                    });
+
+                    es.addEventListener("hygiene", (ev) => {
+                      try {
+                        const hg = JSON.parse(ev.data || "{}");
+                        const text = `merged ${hg.merged ?? 0}, pruned nodes ${hg.pruned_nodes ?? 0}, pruned edges ${hg.pruned_edges ?? 0}`;
+                        setHistory((h) => h.map((m) => (
+                          m.id === id ? { ...m, checkpoints: [...(m.checkpoints || []), { kind: "hygiene", step: (m.meta?.step ?? 0), summary: text, data: hg }] } : m
+                        )));
+                      } catch (_) {}
+                    });
+
+                    es.addEventListener("done", (ev) => {
+                      clearInterval(loopTimer);
+                      let stats = {};
+                      try { stats = JSON.parse(ev.data || "{}"); } catch (_) {}
+                      const elapsed = Math.max(0, Date.now() - ingestStart);
+                      setHistory((h) => h.map((m) => (
+                        m.id === id
+                          ? {
+                              ...m,
+                              ready: true,
+                              progress: 1,
+                              stats: {
+                                ...(m.stats || {}),
+                                totalWords,
+                                totalLines: upload.totalLines,
+                                timeMs: elapsed,
+                                steps: stats.steps,
+                              },
+                              content: `Text input of ${totalWords} words processed in ${Math.round(elapsed/1000)}s.`,
+                            }
+                          : m
+                      )));
+                      closeES();
+                    });
+
+                    es.addEventListener("error", () => {
+                      clearInterval(loopTimer);
+                      setHistory((h) => h.map((m) => (m.id === id ? { ...m, content: `[Error] Ingest stream failed`, ready: true } : m)));
+                      closeES();
+                    });
+                  }}
+                >Process</button>
                 <button
                   type="button"
                   className="px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"

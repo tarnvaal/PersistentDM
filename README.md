@@ -1,4 +1,4 @@
-# PersistentDM
+# <img src="frontend/src/icon.webp" alt="PersistentDM icon" width="28" style="vertical-align:middle;margin-right:8px;" /> PersistentDM
 
 A text-based interactive fiction system that uses large language models to generate persistent world states and narrative responses.
 

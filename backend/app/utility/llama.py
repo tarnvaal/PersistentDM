@@ -444,6 +444,58 @@ class Chatter:
         )
         return self._complete_json(system, user, "extract_graph_changes", debug=debug)
 
+    def extract_memory_from_text(self, text: str, debug: bool = False) -> dict | None:
+        """Extract ONE durable memory from arbitrary text.
+
+        Returns a dict compatible with WorldMemory.add_memory input or None.
+        """
+        system = (
+            "You analyze narrative text to extract ONE important persistent fact.\n"
+            "Return ONLY a JSON object with keys summary, entities, type, confidence, and optional npc."
+            ' If nothing durable, return {"summary": "NO_CHANGES", "entities": [], "type": "none", "confidence": 0.0}.'
+        )
+        user = text[:4000]
+        return self._complete_json(
+            system, user, "extract_memory_from_text", debug=debug
+        )
+
+    def summarize_snippet(self, text: str, debug: bool = False) -> dict | None:
+        """Produce a short 1-2 sentence checkpoint summary for UI."""
+        system = (
+            "Summarize the following text in 1-2 concise sentences suitable for a progress checkpoint.\n"
+            'Return ONLY {"summary": string}.'
+        )
+        user = text[:4000]
+        return self._complete_json(system, user, "summarize_snippet", debug=debug)
+
+    def extract_memories_from_text(
+        self, text: str, max_items: int = 5, debug: bool = False
+    ) -> list[dict] | None:
+        """Extract up to max_items durable memories from text in one pass.
+
+        Returns a list of memory dicts; each has keys summary, entities, type, confidence, optional npc.
+        """
+        system = (
+            "You analyze narrative/game text to extract IMPORTANT persistent facts.\n"
+            "Return ONLY a JSON array (max {max_items}) of objects with keys: summary, entities, type, confidence, optional npc.\n"
+            "Types: npc|location|item|goal|threat|world_state|other.\n"
+            "If nothing durable, return []."
+        ).replace("{max_items}", str(max_items))
+        user = text[:4000]
+        result = self._complete_json(
+            system, user, "extract_memories_from_text", debug=debug
+        )
+        if isinstance(result, list):
+            # Filter to dicts
+            return [m for m in result if isinstance(m, dict)]
+        # Some models might return an object with list under a key
+        if isinstance(result, dict):
+            for key in ("memories", "items", "facts"):
+                val = result.get(key)
+                if isinstance(val, list):
+                    return [m for m in val if isinstance(m, dict)]
+        return []
+
     def _complete_json(
         self, system: str, user: str, request_type: str, debug: bool = False
     ) -> dict | None:
