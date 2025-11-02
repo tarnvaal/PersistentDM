@@ -138,6 +138,8 @@ cd frontend && npm run preview
 - `GET /health` - Health check
 - `POST /chat` - Send chat message
 - `POST /chat/clear` - Clear conversation history
+- `POST /ingest/upload` - Upload raw text to be processed
+- `GET /ingest/stream?id=...` - Server-Sent Events stream for chunked ingestion
 
 See `requests.rest` for example API calls.
 
@@ -152,6 +154,29 @@ See `requests.rest` for example API calls.
   - `relevance` contains lightweight memory/NPC relevance info
   - `relevance.saved` (when present) summarizes what memory was persisted this turn (type, summary, entities, confidence)
   - These fields are intended for development/debugging and are shown in the dev UI
+
+### Request Flow (Ingest pasted text)
+- Frontend uploads the pasted text via `POST /ingest/upload` and receives `{ id, totalWords, totalLines }`.
+- Frontend opens an `EventSource` to `GET /ingest/stream?id=<id>`.
+- The backend iterates over the text in sliding windows (window/stride by words) and emits SSE events:
+  - `info` — initial run parameters: approx tokens, window/stride (words), total steps, checkpoint interval
+  - `progress` — `{ step, totalSteps, consumedWords, consumedLines, progress }`
+  - `saved` — when a durable memory is persisted; includes summary, type, entities, optional NPC payload, confidence
+  - `checkpoint` — lightweight summaries at periodic checkpoints (not persisted)
+  - `hygiene` — results of location-graph hygiene (merged/pruned counts)
+  - `done` — final stats: words, lines, steps
+- Cancellation: closing the EventSource (e.g., clicking the trashcan/clear button) stops processing at the start of the next chunk; `POST /chat/clear` also resets memories, NPC index, and the location graph.
+
+Example (terminal):
+```bash
+# 1) Upload text
+curl -sX POST http://localhost:8000/ingest/upload \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Your pasted text here"}'
+
+# 2) Stream SSE events (using curl --no-buffer)
+curl --no-buffer "http://localhost:8000/ingest/stream?id=<id-from-step-1>"
+```
 
 ## Testing
 
