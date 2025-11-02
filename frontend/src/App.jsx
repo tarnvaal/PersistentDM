@@ -114,6 +114,8 @@ function App() {
   const messagesRef = useRef(null);
   const activeIngestStreamsRef = useRef(new Map()); // Map of ingestId -> {es: EventSource, timer: interval}
   const cancelledIngestIdsRef = useRef(new Set());
+  const [strideWords, setStrideWords] = useState(63);
+  const [strideTouched, setStrideTouched] = useState(false);
 
   useEffect(() => {
     const el = messagesRef.current;
@@ -184,6 +186,17 @@ function App() {
       }
     }
   }, [expanded, history]);
+
+  useEffect(() => {
+    // Auto-estimate stride words from current text unless user has edited it
+    if (!pasteOpen) return;
+    if (strideTouched) return;
+    const text = pasteText || "";
+    const words = text.trim().length === 0 ? 0 : text.trim().split(/\s+/).length;
+    const tokensPerWord = words === 0 ? 1.3 : Math.max(0.5, Math.min(2.0, (text.length / 4) / Math.max(1, words)));
+    const defaultStride = Math.max(1, Math.min(5000, Math.floor(100 / Math.max(0.0001, tokensPerWord)))); // ~100 token stride, capped
+    setStrideWords(defaultStride);
+  }, [pasteOpen, pasteText, strideTouched]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -388,15 +401,29 @@ function App() {
                       )}
                     </div>
                   </div>
-                  <div className="mt-1 text-xs opacity-70">
+                  <div className="mt-1 text-xs opacity-70 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
+                      aria-label={item.detailsOpen ? "Collapse details" : "Expand details"}
+                      aria-expanded={!!item.detailsOpen}
+                      onClick={() => setHistory((h) => h.map((m) => (
+                        m.id === item.id ? { ...m, detailsOpen: !m.detailsOpen } : m
+                      )))}
+                    >
+                      <svg className={`w-3.5 h-3.5 transition-transform ${item.detailsOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M19 7l-7 7-7-7" />
+                        <path d="M19 13l-7 7-7-7" />
+                      </svg>
+                    </button>
                     {meta.totalSteps != null && (
-                      <span>Chunk {Math.min((meta.step || 0) + 1, meta.totalSteps)} / {meta.totalSteps} • </span>
+                      <span>Chunk {Math.min((meta.step || 0) + 1, meta.totalSteps)} / {meta.totalSteps}</span>
                     )}
-                    {meta.consumedWords != null && <span>{meta.consumedWords} words processed</span>}
                     {typeof item.etaMs === "number" && (
                       <span>{" • ETA "}{Math.max(0, Math.floor(item.etaMs/60000))}m {Math.max(0, Math.round((item.etaMs%60000)/1000))}s</span>
                     )}
                   </div>
+                  {item.detailsOpen && (
                   <div className="mt-2 text-sm bg-[#1e2a30] text-[#c9d1d9] rounded-lg p-3 w-[95%] max-w-[95%]">
                       <div className="text-xs uppercase tracking-wide opacity-70 mb-1">Checkpoints</div>
                       {(() => {
@@ -458,12 +485,13 @@ function App() {
                             );
                           })}
                       </ul>
-                      {item.stats && (
+                      {item.ready && item.stats && (
                         <div className="mt-2 text-xs opacity-80">
                           Words: {item.stats.totalWords} • Lines: {item.stats.totalLines} • Tokens≈ {item.stats.approxTokens ?? "?"} • Time: {Math.round((item.stats.timeMs || 0)/1000)}s
                         </div>
                       )}
                   </div>
+                  )}
                 </div>
               );
             }
@@ -611,6 +639,49 @@ function App() {
             <div className="px-4 py-3 border-b border-[#3a454b] flex items-center justify-between">
               <h2 id="paste-title" className="text-[#f0f0f0] text-base font-semibold">Paste text</h2>
               <div className="flex items-center gap-2">
+                <div className="flex flex-col items-start mr-2">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs opacity-80" htmlFor="stride-words-input">Chunk Size</label>
+                    <input
+                      id="stride-words-input"
+                      type="number"
+                      min="1"
+                      max="5000"
+                      value={strideWords}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw === "") {
+                          setStrideWords("");
+                          setStrideTouched(true);
+                          return;
+                        }
+                        const v = Math.max(1, Math.min(5000, parseInt(raw || "1", 10) || 1));
+                        setStrideWords(v);
+                        setStrideTouched(true);
+                      }}
+                      className="w-20 px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] focus:outline-none focus:border-[#FF6600] focus:ring-2 focus:ring-[rgba(255,102,0,0.3)]"
+                    />
+                    {(() => {
+                      const isEmpty = String(strideWords ?? "").trim() === "";
+                      if (isEmpty) return null;
+                      const text = pasteText || "";
+                      const words = text.trim().length === 0 ? 0 : text.trim().split(/\s+/).length;
+                      const tokensPerWord = words === 0 ? 1.3 : Math.max(0.5, Math.min(2.0, (text.length / 4) / Math.max(1, words)));
+                      const windowTokens = 200;
+                      const windowWords = Math.max(1, Math.floor(windowTokens / Math.max(0.0001, tokensPerWord)));
+                      const sWords = Math.max(1, Math.min(5000, (parseInt(String(strideWords), 10) || 1)));
+                      const totalSteps = Math.max(1, Math.ceil(Math.max(0, words - windowWords) / sWords) + 1);
+                      const secondsPerStep = 17.3;
+                      const totalSeconds = Math.max(0, Math.round(totalSteps * secondsPerStep));
+                      const mm = Math.floor(totalSeconds / 60);
+                      const ss = Math.max(0, totalSeconds % 60);
+                      return (
+                        <div className="text-xs opacity-70">{`≈ ${totalSteps} chunks • ETA ${mm}m ${ss}s`}</div>
+                      );
+                    })()}
+                  </div>
+                  <div className="text-[10px] opacity-60">roughly estimated for a 4090</div>
+                </div>
                 <button
                   type="button"
                   className="px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
@@ -620,7 +691,7 @@ function App() {
                     const id = `ingest-${Date.now()}`;
                     setHistory((h) => [
                       ...h,
-                      { role: "assistant", id, type: "ingest", content: "Processing pasted text…", ready: false, progress: 0, loop: 0, stats: null, checkpoints: [], etaMs: null },
+                      { role: "assistant", id, type: "ingest", content: "Processing pasted text…", ready: false, progress: 0, loop: 0, stats: null, checkpoints: [], etaMs: null, detailsOpen: true },
                     ]);
 
                     // Upload text to backend
@@ -650,7 +721,8 @@ function App() {
                     }, 150);
 
                     // Open SSE stream
-                    const es = new EventSource(`${apiBase}/ingest/stream?id=${encodeURIComponent(upload.id)}`);
+                    const strideParam = String(Math.max(1, Math.min(5000, Number(strideWords) || 1)));
+                    const es = new EventSource(`${apiBase}/ingest/stream?id=${encodeURIComponent(upload.id)}&strideWords=${encodeURIComponent(strideParam)}`);
                     activeIngestStreamsRef.current.set(id, { es, timer: loopTimer });
                     es.addEventListener("info", (ev) => {
                       try {

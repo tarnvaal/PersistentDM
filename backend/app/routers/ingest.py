@@ -49,6 +49,7 @@ def _sse(event: str, payload: dict) -> str:
 def stream(
     request: Request,
     id: str = Query(...),
+    stride_words_override: Optional[int] = Query(None, alias="strideWords"),
     conversation=Depends(get_conversation_service),
 ):
     text = _uploads.pop(id, None)
@@ -68,7 +69,13 @@ def stream(
     window_tokens = 200
     stride_tokens = 100
     window_words = max(1, int(window_tokens / tokens_per_word))
-    stride_words = max(1, int(stride_tokens / tokens_per_word))
+    if stride_words_override is not None:
+        try:
+            stride_words = max(1, min(5000, int(stride_words_override)))
+        except Exception:
+            stride_words = max(1, int(stride_tokens / tokens_per_word))
+    else:
+        stride_words = max(1, int(stride_tokens / tokens_per_word))
 
     total_steps = max(
         1, ((max(0, total_words - window_words) + stride_words - 1) // stride_words) + 1
