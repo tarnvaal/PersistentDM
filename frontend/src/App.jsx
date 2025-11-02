@@ -20,6 +20,34 @@ function App() {
     el.scrollTop = el.scrollHeight;
   }, [history]);
 
+  // When expanding a message's details, ensure the expanded content is visible.
+  // Specifically, if the newest message is expanded, scroll to bottom to reveal it.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el || history.length === 0) return;
+
+    const lastIdx = history.length - 1;
+    if (expanded[lastIdx]) {
+      // Newest bubble expanded: scroll to bottom to fully reveal
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+
+    // Otherwise, scroll the most recently expanded details into view
+    // (handles expanding older messages)
+    const expandedIndices = Object.entries(expanded)
+      .filter(([, v]) => !!v)
+      .map(([k]) => Number(k))
+      .filter((n) => !Number.isNaN(n));
+    if (expandedIndices.length > 0) {
+      const targetIdx = Math.max(...expandedIndices);
+      const detailsEl = document.getElementById(`details-${targetIdx}`);
+      if (detailsEl && typeof detailsEl.scrollIntoView === "function") {
+        detailsEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+  }, [expanded, history]);
+
   async function handleSubmit(e) {
     e.preventDefault();
     const text = input.trim();
