@@ -30,7 +30,18 @@ def get_embeddings() -> EmbeddingModel:
 @lru_cache(maxsize=1)
 def get_world_memory() -> WorldMemory:
     embedder = get_embeddings()
-    return WorldMemory(embedder.embed)
+    wm = WorldMemory(embedder.embed)
+    # Load persisted ingest shards on first creation
+    env_dir = os.getenv("INGESTS_DIR")
+    if env_dir:
+        base_dir = env_dir
+    else:
+        # Resolve project root relative to this file
+        here = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(here, "..", ".."))
+        base_dir = os.path.join(project_root, "data", "ingests")
+    wm.load_ingest_shards(base_dir)
+    return wm
 
 
 def get_conversation_service(

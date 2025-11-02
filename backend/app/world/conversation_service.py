@@ -218,7 +218,13 @@ class ConversationService:
     def _maybe_llm_update_location_and_graph(
         self, user_message: str, dm_response: str
     ) -> bool:
-        """Use the LLM to infer movement and extract graph changes. Returns True if any update applied."""
+        """Use the LLM to infer movement and extract graph changes. Returns True if any update applied.
+
+        NOTE: Ingested locations/memories are persisted and loaded into an ingest layer.
+        They are not injected into the live session graph. After restart, lore is available
+        for retrieval, but navigation into ingest-only locations will not work until merged
+        view + traversal logic is implemented.
+        """
         updated = False
         loc = self.world_memory.location_graph.get_current_location()
         try:
