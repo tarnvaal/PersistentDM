@@ -160,30 +160,39 @@ function App() {
   }, [apiBase]);
 
   // When expanding a message's details, ensure the expanded content is visible.
-  // Specifically, if the newest message is expanded, scroll to bottom to reveal it.
   useEffect(() => {
     const el = messagesRef.current;
     if (!el || history.length === 0) return;
 
-    const lastIdx = history.length - 1;
-    if (expanded[lastIdx]) {
-      // Newest bubble expanded: scroll to bottom to fully reveal
-      el.scrollTop = el.scrollHeight;
-      return;
-    }
-
-    // Otherwise, scroll the most recently expanded details into view
-    // (handles expanding older messages)
+    // Find the most recent expanded index (highest index)
     const expandedIndices = Object.entries(expanded)
       .filter(([, v]) => !!v)
       .map(([k]) => Number(k))
       .filter((n) => !Number.isNaN(n));
-    if (expandedIndices.length > 0) {
-      const targetIdx = Math.max(...expandedIndices);
-      const detailsEl = document.getElementById(`details-${targetIdx}`);
-      if (detailsEl && typeof detailsEl.scrollIntoView === "function") {
-        detailsEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      }
+
+    if (expandedIndices.length === 0) return;
+
+    const targetIdx = Math.max(...expandedIndices);
+    const detailsEl = document.getElementById(`details-${targetIdx}`);
+    if (!detailsEl) return;
+
+    // Compute visibility relative to the scroll container and only scroll if needed
+    const containerRect = el.getBoundingClientRect();
+    const detailsRect = detailsEl.getBoundingClientRect();
+    const margin = 8; // small padding when bringing into view
+
+    const belowBottom = detailsRect.bottom > containerRect.bottom;
+    const aboveTop = detailsRect.top < containerRect.top;
+
+    if (belowBottom) {
+      const delta = (detailsRect.bottom - containerRect.bottom) + margin;
+      el.scrollTo({ top: el.scrollTop + delta, behavior: "smooth" });
+      return;
+    }
+    if (aboveTop) {
+      const delta = (containerRect.top - detailsRect.top) + margin;
+      el.scrollTo({ top: Math.max(0, el.scrollTop - delta), behavior: "smooth" });
+      return;
     }
   }, [expanded, history]);
 
