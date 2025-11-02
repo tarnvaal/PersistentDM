@@ -118,6 +118,7 @@ function App() {
   const cancelledIngestIdsRef = useRef(new Set());
   const [strideWords, setStrideWords] = useState(1000);
   const [strideTouched, setStrideTouched] = useState(false);
+  const isAtBottomRef = useRef(true);
 
 
   // Load saved ingests when modal opens
@@ -209,6 +210,20 @@ function App() {
     }
   }, [expanded, history]);
 
+  const scrollToBottom = (behavior = "auto") => {
+    const el = messagesRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  };
+
+  // Stick to bottom only if user is already at bottom
+  useEffect(() => {
+    if (!messagesRef.current) return;
+    if (isAtBottomRef.current) {
+      scrollToBottom("auto");
+    }
+  }, [history]);
+
   useEffect(() => {
     // Default chunk size is 1000 unless user has edited it
     if (!pasteOpen) return;
@@ -224,6 +239,8 @@ function App() {
     setHistory((h) => [...h, { role: "user", content: text }]);
     setInput("");
     setSending(true);
+    // When the user sends a message, re-enable autoscroll and stick to bottom
+    isAtBottomRef.current = true;
 
     const typingId = `typing-${Date.now()}`;
     setHistory((h) => [...h, { role: "assistant", type: "typing", content: "", id: typingId }]);
@@ -393,6 +410,12 @@ function App() {
           aria-live="polite"
           aria-relevant="additions"
           aria-label="Chat messages"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            const threshold = 24; // px tolerance for being considered at bottom
+            const atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) <= threshold;
+            isAtBottomRef.current = atBottom;
+          }}
         >
           {history.map((item, idx) => {
             if (item.type === "typing") {
