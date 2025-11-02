@@ -1,6 +1,6 @@
 import time
 import uuid
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from ..utility.embeddings import dot_sim
 
@@ -11,6 +11,8 @@ class WorldMemory:
         self.embed_fn = embed_fn
         # Lightweight NPC index mapping canonical_name -> snapshot dict
         self.npc_index: Dict[str, Dict[str, Any]] = {}
+        # Simple in-process location graph
+        self.location_graph = WorldGraph()
 
     def add_memory(
         self,
@@ -211,3 +213,57 @@ class WorldMemory:
                 }
             )
         return results
+
+
+# ---------------- Location Graph ----------------
+
+
+class LocationEdge:
+    def __init__(self, to_location: str, description: str, travel_verb: str = "go"):
+        self.to_location = to_location
+        self.description = description
+        self.travel_verb = travel_verb
+
+
+class LocationNode:
+    def __init__(self, name: str, description: str = ""):
+        self.name = name
+        self.description = description
+        self.connections: List[LocationEdge] = []
+        self.npcs_present: List[str] = []
+
+
+class WorldGraph:
+    def __init__(self):
+        self.locations: Dict[str, LocationNode] = {}
+        self.player_location: Optional[str] = None
+
+    def add_location(self, node: LocationNode) -> None:
+        self.locations[node.name] = node
+
+    def add_connection(
+        self,
+        from_name: str,
+        to_name: str,
+        edge_description: str,
+        travel_verb: str = "go",
+    ) -> None:
+        if from_name in self.locations and to_name in self.locations:
+            self.locations[from_name].connections.append(
+                LocationEdge(
+                    to_location=to_name,
+                    description=edge_description,
+                    travel_verb=travel_verb,
+                )
+            )
+
+    def get_current_location(self) -> Optional[LocationNode]:
+        if not self.player_location:
+            return None
+        return self.locations.get(self.player_location)
+
+    def move_player(self, new_location_name: str) -> bool:
+        if new_location_name in self.locations:
+            self.player_location = new_location_name
+            return True
+        return False

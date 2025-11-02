@@ -9,6 +9,7 @@ from .context_builder import (
     weighted_retrieve_with_scores,
     format_world_facts,
     format_npc_cards,
+    format_location_context,
 )
 from .memory_utils import sanitize_entities
 
@@ -33,10 +34,10 @@ class ConversationService:
 
     def _maybe_analyze_and_store_memory(
         self, user_message: str, dm_response: str
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         analyze = getattr(self.chatter, "analyze_conversation_for_memories", None)
         if not callable(analyze):
-            return
+            return None
 
         conversation_context: Dict[str, Any] = {
             "user_message": user_message,
@@ -47,7 +48,7 @@ class ConversationService:
         try:
             result: object = analyze(conversation_context)  # runtime-typed
         except Exception:
-            return
+            return None
 
         summary: Optional[Dict[str, Any]] = result if isinstance(result, dict) else None
         if summary is None:
@@ -58,7 +59,7 @@ class ConversationService:
         except Exception:
             conf = 0.0
         if conf <= 0.6:
-            return
+            return None
 
         entities = sanitize_entities(summary.get("entities"))
         npc_payload = summary.get("npc")
@@ -69,9 +70,16 @@ class ConversationService:
                 summary.get("type", "other"),
                 npc=npc_payload,
             )
+            return {
+                "summary": summary.get("summary", ""),
+                "type": summary.get("type", "other"),
+                "entities": entities,
+                "npc": npc_payload if isinstance(npc_payload, dict) else None,
+                "confidence": conf,
+            }
         except Exception:
             # Fail-closed; memory storage must not break chats
-            return
+            return None
 
     def handle_user_message(
         self, user_message: str
@@ -81,6 +89,7 @@ class ConversationService:
 
         merged_context: Optional[str] = None
         relevance_payload: Optional[Dict[str, Any]] = None
+        saved_this_turn: Optional[Dict[str, Any]] = None
         if supports_context:
             try:
                 # Retrieve memories with scores and thresholds
@@ -95,12 +104,17 @@ class ConversationService:
                 )
                 npc_cards = format_npc_cards([n["_raw"] for n in npc_scored])
 
-                if npc_cards and facts_str:
-                    merged_context = npc_cards + "\n\n" + facts_str
-                elif npc_cards:
-                    merged_context = npc_cards
-                else:
-                    merged_context = facts_str or None
+                # Retrieve player's current location context
+                location_str = format_location_context(self.world_memory)
+
+                parts = []
+                if npc_cards:
+                    parts.append(npc_cards)
+                if facts_str:
+                    parts.append(facts_str)
+                if location_str:
+                    parts.append(location_str)
+                merged_context = "\n\n".join(parts) if parts else None
 
                 # Build lightweight relevance payload for UI/debug
                 relevance_payload = {
@@ -149,6 +163,126 @@ class ConversationService:
 
         # Only analyze/store memory if chatter provides analyzer and we could build context
         if supports_context:
-            self._maybe_analyze_and_store_memory(user_message, dm_response)
+            saved_this_turn = self._maybe_analyze_and_store_memory(
+                user_message, dm_response
+            )
+            if relevance_payload is not None:
+                relevance_payload["saved"] = saved_this_turn
+
+            # Prefer LLM-guided movement/graph updates; fallback to heuristic
+            if not self._maybe_llm_update_location_and_graph(user_message, dm_response):
+                self._maybe_update_player_location(user_message, dm_response)
 
         return dm_response, merged_context, relevance_payload
+
+    def _maybe_update_player_location(
+        self, user_message: str, dm_response: str
+    ) -> None:
+        """Heuristic: move the player if message/reply implies traveling to a connected location.
+
+        Keeps it conservative to avoid wrong moves; checks current location's exits by
+        name or description and looks for travel phrases in the DM response.
+        """
+        loc = self.world_memory.location_graph.get_current_location()
+        if not loc or not loc.connections:
+            return
+
+        msg = (user_message or "").lower()
+        reply = (dm_response or "").lower()
+
+        travel_ok = any(
+            phrase in reply
+            for phrase in (
+                "you go to",
+                "you walk to",
+                "you head to",
+                "you enter",
+                "you move to",
+            )
+        )
+
+        for edge in loc.connections:
+            target = (edge.to_location or "").lower()
+            edesc = (edge.description or "").lower()
+            if not target:
+                continue
+
+            if target in msg or edesc and edesc in msg:
+                if travel_ok or target in reply:
+                    self.world_memory.location_graph.move_player(edge.to_location)
+                    break
+
+    def _maybe_llm_update_location_and_graph(
+        self, user_message: str, dm_response: str
+    ) -> bool:
+        """Use the LLM to infer movement and extract graph changes. Returns True if any update applied."""
+        updated = False
+        loc = self.world_memory.location_graph.get_current_location()
+        try:
+            exits = []
+            if loc:
+                for e in loc.connections:
+                    exits.append(
+                        {
+                            "to_location": e.to_location,
+                            "description": e.description,
+                            "travel_verb": e.travel_verb,
+                        }
+                    )
+            # 1) Movement inference
+            mv = getattr(self.chatter, "infer_player_movement", None)
+            if callable(mv):
+                res = mv(
+                    loc.__dict__ if loc else None, exits, user_message, dm_response
+                )
+                if isinstance(res, dict) and res.get("move") and res.get("target"):
+                    try:
+                        conf = float(res.get("confidence", 0.0))
+                    except Exception:
+                        conf = 0.0
+                    if conf >= 0.7:
+                        target = str(res.get("target"))
+                        if self.world_memory.location_graph.move_player(target):
+                            updated = True
+
+            # 2) Graph extraction (new nodes/edges)
+            gx = getattr(self.chatter, "extract_graph_changes", None)
+            if callable(gx):
+                res2 = gx(user_message, dm_response, loc.name if loc else None)
+                if isinstance(res2, dict):
+                    try:
+                        conf2 = float(res2.get("confidence", 0.0))
+                    except Exception:
+                        conf2 = 0.0
+                    if conf2 >= 0.7:
+                        # Add locations
+                        for node in res2.get("new_locations", []) or []:
+                            name = str(node.get("name", "")).strip()
+                            if (
+                                name
+                                and name
+                                not in self.world_memory.location_graph.locations
+                            ):
+                                desc = str(node.get("description", "")).strip()
+                                from .memory import (
+                                    LocationNode,
+                                )  # local import to avoid cycle
+
+                                self.world_memory.location_graph.add_location(
+                                    LocationNode(name, desc)
+                                )
+                                updated = True
+                        # Add connections
+                        for edge in res2.get("new_connections", []) or []:
+                            src = str(edge.get("from", "")).strip()
+                            dst = str(edge.get("to", "")).strip()
+                            edesc = str(edge.get("description", "")).strip()
+                            if src and dst and edesc:
+                                self.world_memory.location_graph.add_connection(
+                                    src, dst, edesc
+                                )
+                                updated = True
+        except Exception:
+            # Never let LLM graph/movement updates break the chat
+            return updated
+        return updated

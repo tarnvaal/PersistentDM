@@ -20,6 +20,41 @@ function App() {
     el.scrollTop = el.scrollHeight;
   }, [history]);
 
+  // Poll model status and update the header dot
+  useEffect(() => {
+    let timer;
+    let cancelled = false;
+    const dot = () => document.getElementById("model-status-dot");
+
+    const updateDot = (state) => {
+      const el = dot();
+      if (!el) return;
+      let color = "#666"; // unknown
+      if (state === "unloaded" || state === "failed") color = "#c0392b"; // red
+      else if (state === "loading") color = "#f39c12"; // yellow
+      else if (state === "ready") color = "#2ecc71"; // green
+      el.style.backgroundColor = color;
+      const label = `Model status: ${state}`;
+      el.setAttribute("aria-label", label);
+      el.setAttribute("title", label);
+    };
+
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`${apiBase}/status`);
+        if (!res.ok) throw new Error("status not ok");
+        const data = await res.json();
+        if (!cancelled) updateDot(data.state || "unknown");
+      } catch (_) {
+        if (!cancelled) updateDot("unloaded");
+      }
+    };
+
+    fetchStatus();
+    timer = setInterval(fetchStatus, 2000);
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [apiBase]);
+
   // When expanding a message's details, ensure the expanded content is visible.
   // Specifically, if the newest message is expanded, scroll to bottom to reveal it.
   useEffect(() => {
@@ -60,33 +95,83 @@ function App() {
     const typingId = `typing-${Date.now()}`;
     setHistory((h) => [...h, { role: "assistant", type: "typing", content: "", id: typingId }]);
 
-    try {
-      const res = await fetch(`${apiBase}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      if (!res.ok) {
-        let errMsg = res.statusText || "Request failed";
-        try {
-          const err = await res.json();
-          if (err && err.detail && err.detail.message) errMsg = err.detail.message;
-        } catch (_) {}
-        setHistory((h) => [...h, { role: "assistant", content: `[Error] ${errMsg}` }]);
-      } else {
-        const data = await res.json();
-        const trimmedReply = (data.reply || "").trimEnd();
-        setHistory((h) => [
-          ...h,
-          { role: "assistant", content: trimmedReply, context: data.context, relevance: data.relevance }
-        ]);
+    const postFallback = async () => {
+      try {
+        const res = await fetch(`${apiBase}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        if (!res.ok) {
+          let errMsg = res.statusText || "Request failed";
+          try {
+            const err = await res.json();
+            if (err && err.detail && err.detail.message) errMsg = err.detail.message;
+          } catch (_) {}
+          setHistory((h) => [...h, { role: "assistant", content: `[Error] ${errMsg}` }]);
+        } else {
+          const data = await res.json();
+          const trimmedReply = (data.reply || "").trimEnd();
+          setHistory((h) => [
+            ...h,
+            { role: "assistant", content: trimmedReply, context: data.context, relevance: data.relevance, ready: true }
+          ]);
+        }
+      } catch (err) {
+        setHistory((h) => [...h, { role: "assistant", content: `[Network error] ${String(err)}` }]);
+      } finally {
+        setHistory((h) => h.filter((m) => m.id !== typingId));
+        setSending(false);
       }
-    } catch (err) {
-      setHistory((h) => [...h, { role: "assistant", content: `[Network error] ${String(err)}` }]);
-    } finally {
-      setHistory((h) => h.filter((m) => m.id !== typingId));
-      setSending(false);
+    };
+
+    // Prefer streaming SSE for staged UI; fallback to single POST if EventSource unsupported
+    if (typeof EventSource !== "undefined") {
+      const es = new EventSource(`${apiBase}/chat/stream?message=${encodeURIComponent(text)}`);
+      const assistantId = `assistant-${Date.now()}`;
+
+      const closeES = () => {
+        try { es.close(); } catch (_) {}
+      };
+
+      es.addEventListener("reply", (ev) => {
+        try {
+          const data = JSON.parse(ev.data || "{}");
+          const trimmedReply = (data.reply || "").trimEnd();
+          setHistory((h) => {
+            const withoutTyping = h.filter((m) => m.id !== typingId);
+            return [
+              ...withoutTyping,
+              { role: "assistant", id: assistantId, content: trimmedReply, ready: false }
+            ];
+          });
+        } catch (_) {}
+      });
+
+      es.addEventListener("meta", (ev) => {
+        try {
+          const data = JSON.parse(ev.data || "{}");
+          setHistory((h) => h.map((m) => (
+            m.id === assistantId ? { ...m, context: data.context, relevance: data.relevance, ready: true } : m
+          )));
+        } catch (_) {}
+      });
+
+      es.addEventListener("done", () => {
+        setSending(false);
+        closeES();
+      });
+
+      es.addEventListener("error", () => {
+        closeES();
+        // Seamless fallback to non-streaming POST
+        postFallback();
+      });
+      return;
     }
+
+    // Fallback: single response
+    postFallback();
   }
 
   function toggleExpanded(idx) {
@@ -110,7 +195,9 @@ function App() {
     <main id="chat-app" role="main" aria-label="Chat" className="max-w-[800px] mt-4 mx-auto">
       <div className="bg-[#2C3539] border border-[#444] rounded-xl p-3 pb-3 flex flex-col h-[calc(100vh-var(--chat-offset))] shadow-[0_4px_12px_rgba(0,0,0,0.3)]">
         <div id="controls" className="flex gap-2 mb-2 items-center justify-between">
-          <div className="flex items-center gap-2 flex-1"></div>
+          <div className="flex items-center gap-2 flex-1">
+            <span id="model-status-dot" className="status-dot" aria-label="Model status: unknown" title="Model status: unknown"></span>
+          </div>
           <div className="flex items-center gap-2">
             <button
               className="inline-flex items-center justify-center w-9 h-9 rounded-[10px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] transition-colors ease-linear hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600] active:translate-y-px"
@@ -156,7 +243,7 @@ function App() {
               >
                 <div
                   className={
-                    `relative px-4 py-2 my-1 rounded-[20px] whitespace-normal break-words min-h-[64px] leading-[1.45] font-medium text-[1.05rem] ${
+                    `relative px-4 py-2 my-1 rounded-[20px] whitespace-normal break-words leading-[1.45] font-medium text-[1.05rem] ${
                       !isUser ? "pb-8 " : ""
                     }` +
                     (isUser
@@ -172,8 +259,9 @@ function App() {
                       aria-label="Expand details"
                       type="button"
                       aria-expanded={!!expanded[idx]}
+                      disabled={!item.ready}
                       aria-controls={`details-${idx}`}
-                      onClick={() => toggleExpanded(idx)}
+                      onClick={() => item.ready && toggleExpanded(idx)}
                     >
                       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M19 7l-7 7-7-7" />
@@ -189,6 +277,23 @@ function App() {
                     role="region"
                     aria-labelledby={`details-button-${idx}`}
                   >
+                    {item.relevance && item.relevance.saved && (
+                      <div className="mb-2">
+                        <div className="text-xs uppercase tracking-wide opacity-70 mb-1">Saved this turn</div>
+                        <ul className="list-disc list-inside space-y-1">
+                          <li className="text-xs">
+                            <span className="opacity-80">[{item.relevance.saved.type}]</span> {item.relevance.saved.summary}
+                            {item.relevance.saved.entities && item.relevance.saved.entities.length > 0 && (
+                              <span className="opacity-60"> (entities: {item.relevance.saved.entities.join(", ")})</span>
+                            )}
+                            {typeof item.relevance.saved.confidence === "number" && (
+                              <span className="opacity-60"> — conf {item.relevance.saved.confidence.toFixed ? item.relevance.saved.confidence.toFixed(2) : item.relevance.saved.confidence}</span>
+                            )}
+                          </li>
+                        </ul>
+                        <div className="h-px bg-[#344046] my-2" />
+                      </div>
+                    )}
                     {item.relevance && (item.relevance.memories?.length > 0 || item.relevance.npcs?.length > 0) && (
                       <div className="mb-2">
                         {item.relevance.memories?.length > 0 && (
