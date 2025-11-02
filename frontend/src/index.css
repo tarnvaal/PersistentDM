@@ -13,6 +13,40 @@ body {
   box-sizing: border-box;
 }
 
+/* Accessibility utilities */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -1000px;
+  background: #FF6600;
+  color: #111111;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  z-index: 1000;
+}
+.skip-link:focus {
+  top: 8px;
+  outline: 2px solid #ffffff;
+}
+
+/* Focus styles for keyboard navigation */
+button:focus-visible, [role="button"]:focus-visible, a:focus-visible, input:focus-visible {
+  outline: 2px solid #FF6600;
+  outline-offset: 2px;
+}
+
 /* Header Styling */
 .header-container {
   margin-bottom: 2rem;
@@ -91,4 +125,9 @@ body {
   0%, 20% { content: '.'; }
   40% { content: '..'; }
   60%, 100% { content: '...'; }
+}
+
+/* Respect reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .typing::after { animation: none; }
 }

@@ -79,7 +79,7 @@ function App() {
   }
 
   return (
-    <div id="chat-app" className="max-w-[800px] mt-4 mx-auto">
+    <main id="chat-app" role="main" aria-label="Chat" className="max-w-[800px] mt-4 mx-auto">
       <div className="bg-[#2C3539] border border-[#444] rounded-xl p-3 pb-3 flex flex-col h-[calc(100vh-var(--chat-offset))] shadow-[0_4px_12px_rgba(0,0,0,0.3)]">
         <div id="controls" className="flex gap-2 mb-2 items-center justify-between">
           <div className="flex items-center gap-2 flex-1"></div>
@@ -98,7 +98,15 @@ function App() {
           </div>
         </div>
 
-        <div id="messages" ref={messagesRef} className="flex-1 overflow-y-auto p-2 bg-[#1e2a30] rounded-lg mb-4 flex flex-col gap-2">
+        <div
+          id="messages"
+          ref={messagesRef}
+          className="flex-1 overflow-y-auto p-2 bg-[#1e2a30] rounded-lg mb-4 flex flex-col gap-2"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions"
+          aria-label="Chat messages"
+        >
           {history.map((item, idx) => {
             if (item.type === "typing") {
               return (
@@ -120,7 +128,7 @@ function App() {
               >
                 <div
                   className={
-                    `relative px-4 py-2 my-1 rounded-[20px] whitespace-pre-wrap min-h-[64px] leading-[1.45] font-medium text-[1.05rem] ${
+                    `relative px-4 py-2 my-1 rounded-[20px] whitespace-normal break-words min-h-[64px] leading-[1.45] font-medium text-[1.05rem] ${
                       !isUser ? "pb-8 " : ""
                     }` +
                     (isUser
@@ -131,9 +139,12 @@ function App() {
                   {(isUser ? "You: " : "DM: ") + item.content}
                   {!isUser && (
                     <button
+                      id={`details-button-${idx}`}
                       className="absolute left-2 -bottom-3 inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600] active:translate-y-px"
                       aria-label="Expand details"
                       type="button"
+                      aria-expanded={!!expanded[idx]}
+                      aria-controls={`details-${idx}`}
                       onClick={() => toggleExpanded(idx)}
                     >
                       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -144,7 +155,12 @@ function App() {
                   )}
                 </div>
                 {!isUser && expanded[idx] && (
-                  <div className="mt-2 text-sm bg-[#1e2a30] text-[#c9d1d9] rounded-lg p-3 w-[95%] max-w-[95%]">
+                  <div
+                    className="mt-2 text-sm bg-[#1e2a30] text-[#c9d1d9] rounded-lg p-3 w-[95%] max-w-[95%]"
+                    id={`details-${idx}`}
+                    role="region"
+                    aria-labelledby={`details-button-${idx}`}
+                  >
                     {item.relevance && (item.relevance.memories?.length > 0 || item.relevance.npcs?.length > 0) && (
                       <div className="mb-2">
                         {item.relevance.memories?.length > 0 && (
@@ -197,6 +213,7 @@ function App() {
         </div>
 
         <form id="chat-form" onSubmit={handleSubmit} className="flex gap-2">
+          <label htmlFor="message-input" className="sr-only">Message</label>
           <input
             id="message-input"
             type="text"
@@ -216,7 +233,7 @@ function App() {
           </button>
         </form>
       </div>
-    </div>
+    </main>
   );
 }
 
