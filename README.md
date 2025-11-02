@@ -1,5 +1,7 @@
 # <img src="frontend/src/icon.webp" alt="PersistentDM icon" width="28" style="vertical-align:middle;margin-right:8px;" /> PersistentDM
 
+<img src="screenshots/ShardDemo.webp" alt="ShardDemo" style="max-width:100%;height:auto;margin:16px 0;" />
+
 A text-based interactive fiction system that uses large language models to generate persistent world states and narrative responses.
 
 Supports reusable ingest shards: persist world knowledge (locations + memories) across sessions and load them on demand.
