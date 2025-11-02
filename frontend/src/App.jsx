@@ -11,6 +11,8 @@ function App() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [expanded, setExpanded] = useState({});
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   const messagesRef = useRef(null);
 
   useEffect(() => {
@@ -366,6 +368,52 @@ function App() {
           </button>
         </form>
       </div>
+      {pasteOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="paste-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        >
+          <div className="bg-[#2C3539] border border-[#444] rounded-xl w-[min(92vw,760px)] h-[min(80vh,640px)] shadow-[0_8px_24px_rgba(0,0,0,0.45)] flex flex-col">
+            <div className="px-4 py-3 border-b border-[#3a454b] flex items-center justify-between">
+              <h2 id="paste-title" className="text-[#f0f0f0] text-base font-semibold">Paste text</h2>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
+                  onClick={() => setPasteText("")}
+                >Clear</button>
+                <button
+                  type="button"
+                  className="px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
+                  onClick={() => setPasteOpen(false)}
+                >Close</button>
+              </div>
+            </div>
+            <div className="p-3 flex-1 overflow-y-auto">
+              <label htmlFor="paste-area" className="sr-only">Text to paste</label>
+              <textarea
+                id="paste-area"
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                className="w-full h-full min-h-[320px] resize-none rounded-lg border border-[#4a555c] bg-[#1e2a30] text-[#f0f0f0] p-3 font-mono text-sm leading-relaxed focus:outline-none focus:border-[#FF6600] focus:ring-2 focus:ring-[rgba(255,102,0,0.3)]"
+                placeholder="Paste or type your text here…"
+              />
+            </div>
+            <div className="px-4 py-2 border-t border-[#3a454b] text-xs text-[#c9d1d9] flex items-center justify-between">
+              <div>
+                {(() => {
+                  const text = pasteText || "";
+                  const lines = text.length === 0 ? 0 : (text.match(/\n/g)?.length ?? 0) + 1;
+                  const words = text.trim().length === 0 ? 0 : text.trim().split(/\s+/).length;
+                  return `Words: ${words} • Lines: ${lines}`;
+                })()}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
