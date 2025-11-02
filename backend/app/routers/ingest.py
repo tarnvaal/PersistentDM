@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 from ..dependencies import get_conversation_service
 from ..world.memory_utils import sanitize_entities
-from ..utility.embeddings import dot_sim
 from ..world.memory import LocationNode
 
 
@@ -109,133 +108,6 @@ def stream(
         if desc:
             parts.append(desc)
         return " | ".join([p for p in parts if p])
-
-    def _graph_hygiene(world_memory) -> dict:
-        g = world_memory.location_graph
-        merged = 0
-        pruned_nodes = 0
-        pruned_edges = 0
-
-        # Build vectors for nodes
-        names = list(g.locations.keys())
-        vecs = {}
-        for n in names:
-            node = g.locations[n]
-            desc = _node_descriptor(
-                {
-                    "name": node.name,
-                    "aliases": getattr(node, "aliases", []),
-                    "description": getattr(node, "description", ""),
-                }
-            )
-            vecs[n] = world_memory.embed_fn(desc)
-
-        # Merge highly similar nodes
-        threshold = 0.88
-        removed = set()
-        for i in range(len(names)):
-            a = names[i]
-            if a in removed or a not in g.locations:
-                continue
-            for j in range(i + 1, len(names)):
-                b = names[j]
-                if b in removed or b not in g.locations:
-                    continue
-                if _norm(a) == _norm(b):
-                    # treat identical after normalization as duplicates
-                    # keep 'a', remove 'b'
-                    node_a = g.locations[a]
-                    node_b = g.locations[b]
-                    # merge simple fields
-                    if getattr(node_b, "description", "") and not getattr(
-                        node_a, "description", ""
-                    ):
-                        node_a.description = node_b.description
-                    # merge aliases if present
-                    if hasattr(node_a, "aliases") and hasattr(node_b, "aliases"):
-                        node_a.aliases = list(
-                            {*(node_a.aliases or []), *(node_b.aliases or [])}
-                        )
-                    # move edges
-                    for e in list(node_b.connections):
-                        node_a.connections.append(e)
-                    # redirect edges from others pointing to b
-                    for k, nnode in g.locations.items():
-                        for e in nnode.connections:
-                            if e.to_location == b:
-                                e.to_location = a
-                    del g.locations[b]
-                    removed.add(b)
-                    merged += 1
-                    continue
-                # cosine similarity
-                s = dot_sim(vecs[a], vecs[b]) if (a in vecs and b in vecs) else 0.0
-                if s >= threshold:
-                    # merge b into a (simple strategy)
-                    node_a = g.locations[a]
-                    node_b = g.locations[b]
-                    if getattr(node_b, "description", "") and not getattr(
-                        node_a, "description", ""
-                    ):
-                        node_a.description = node_b.description
-                    if hasattr(node_a, "aliases") and hasattr(node_b, "aliases"):
-                        node_a.aliases = list(
-                            {*(node_a.aliases or []), *(node_b.aliases or [])}
-                        )
-                    for e in list(node_b.connections):
-                        node_a.connections.append(e)
-                    for k, nnode in g.locations.items():
-                        for e in nnode.connections:
-                            if e.to_location == b:
-                                e.to_location = a
-                    del g.locations[b]
-                    removed.add(b)
-                    merged += 1
-
-        # Dedupe edges by to_location
-        for k, node in g.locations.items():
-            seen = set()
-            new_conns = []
-            for e in node.connections:
-                key = (e.to_location, _norm(e.description))
-                if key in seen:
-                    pruned_edges += 1
-                    continue
-                seen.add(key)
-                new_conns.append(e)
-            node.connections = new_conns
-
-        # Compute references to node names in memories
-        refs = {}
-        for k in g.locations.keys():
-            refs[k] = 0
-        for mem in world_memory.memories:
-            for ent in mem.get("entities", []) or []:
-                entn = _norm(str(ent))
-                for name in list(g.locations.keys()):
-                    if entn == _norm(name):
-                        refs[name] = refs.get(name, 0) + 1
-
-        # Prune isolated, unreferenced nodes
-        to_delete = []
-        for name, node in g.locations.items():
-            out_deg = len(node.connections)
-            in_deg = 0
-            for other in g.locations.values():
-                for e in other.connections:
-                    if e.to_location == name:
-                        in_deg += 1
-            if out_deg == 0 and in_deg == 0 and refs.get(name, 0) == 0:
-                to_delete.append(name)
-        for name in to_delete:
-            del g.locations[name]
-            pruned_nodes += 1
-
-        return {
-            "merged": merged,
-            "pruned_nodes": pruned_nodes,
-            "pruned_edges": pruned_edges,
-        }
 
     def generate():
         try:
@@ -337,32 +209,9 @@ def stream(
                 except Exception:
                     pass
 
-                # Every checkpointStepInterval steps provide a small checkpoint summary (not persisted)
-                if (step + 1) % checkpoint_step_interval == 0:
-                    try:
-                        summarizer = getattr(chatter, "summarize_snippet", None)
-                        if callable(summarizer):
-                            cp = summarizer(chunk_text)
-                            if isinstance(cp, dict) and cp.get("summary"):
-                                try:
-                                    yield _sse(
-                                        "checkpoint",
-                                        {"step": step, "summary": cp.get("summary")},
-                                    )
-                                except GeneratorExit:
-                                    return
-                    except Exception:
-                        pass
+                # Checkpoint summary emission removed
 
-                    # Graph hygiene: merge duplicates and prune isolated nodes/edges
-                    try:
-                        stats = _graph_hygiene(world_memory)
-                        try:
-                            yield _sse("hygiene", stats)
-                        except GeneratorExit:
-                            return
-                    except Exception:
-                        pass
+                # Graph hygiene removed
 
                 # Progress update
                 consumed_words = min(total_words, (step + 1) * stride_words)

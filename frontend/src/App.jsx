@@ -114,7 +114,7 @@ function App() {
   const messagesRef = useRef(null);
   const activeIngestStreamsRef = useRef(new Map()); // Map of ingestId -> {es: EventSource, timer: interval}
   const cancelledIngestIdsRef = useRef(new Set());
-  const [strideWords, setStrideWords] = useState(63);
+  const [strideWords, setStrideWords] = useState(1000);
   const [strideTouched, setStrideTouched] = useState(false);
 
   useEffect(() => {
@@ -188,15 +188,11 @@ function App() {
   }, [expanded, history]);
 
   useEffect(() => {
-    // Auto-estimate stride words from current text unless user has edited it
+    // Default chunk size is 1000 unless user has edited it
     if (!pasteOpen) return;
     if (strideTouched) return;
-    const text = pasteText || "";
-    const words = text.trim().length === 0 ? 0 : text.trim().split(/\s+/).length;
-    const tokensPerWord = words === 0 ? 1.3 : Math.max(0.5, Math.min(2.0, (text.length / 4) / Math.max(1, words)));
-    const defaultStride = Math.max(1, Math.min(5000, Math.floor(100 / Math.max(0.0001, tokensPerWord)))); // ~100 token stride, capped
-    setStrideWords(defaultStride);
-  }, [pasteOpen, pasteText, strideTouched]);
+    setStrideWords(1000);
+  }, [pasteOpen, strideTouched]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -411,7 +407,7 @@ function App() {
                         m.id === item.id ? { ...m, detailsOpen: !m.detailsOpen } : m
                       )))}
                     >
-                      <svg className={`w-3.5 h-3.5 transition-transform ${item.detailsOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <svg className={`w-3.5 h-3.5 transition-transform ${!item.detailsOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M19 7l-7 7-7-7" />
                         <path d="M19 13l-7 7-7-7" />
                       </svg>
@@ -525,7 +521,7 @@ function App() {
                       aria-controls={`details-${idx}`}
                       onClick={() => item.ready && toggleExpanded(idx)}
                     >
-                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <svg className={`w-4 h-4 transition-transform ${!expanded[idx] ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M19 7l-7 7-7-7" />
                         <path d="M19 13l-7 7-7-7" />
                       </svg>
@@ -644,9 +640,9 @@ function App() {
                     <label className="text-xs opacity-80" htmlFor="stride-words-input">Chunk Size</label>
                     <input
                       id="stride-words-input"
-                      type="number"
-                      min="1"
-                      max="5000"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       value={strideWords}
                       onChange={(e) => {
                         const raw = e.target.value;
@@ -659,7 +655,7 @@ function App() {
                         setStrideWords(v);
                         setStrideTouched(true);
                       }}
-                      className="w-20 px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] focus:outline-none focus:border-[#FF6600] focus:ring-2 focus:ring-[rgba(255,102,0,0.3)]"
+                      className="w-20 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] focus:outline-none focus:border-[#FF6600] focus:ring-2 focus:ring-[rgba(255,102,0,0.3)]"
                     />
                     {(() => {
                       const isEmpty = String(strideWords ?? "").trim() === "";
@@ -691,7 +687,7 @@ function App() {
                     const id = `ingest-${Date.now()}`;
                     setHistory((h) => [
                       ...h,
-                      { role: "assistant", id, type: "ingest", content: "Processing pasted text…", ready: false, progress: 0, loop: 0, stats: null, checkpoints: [], etaMs: null, detailsOpen: true },
+                      { role: "assistant", id, type: "ingest", content: "Processing pasted text…", ready: false, progress: 0, loop: 0, stats: null, checkpoints: [], etaMs: null, detailsOpen: false },
                     ]);
 
                     // Upload text to backend
