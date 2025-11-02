@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from ..utility.llama import Chatter
 from .memory import WorldMemory
 from .context_builder import (
-    weighted_retrieve,
+    weighted_retrieve_with_scores,
     format_world_facts,
     format_npc_cards,
 )
@@ -73,19 +73,27 @@ class ConversationService:
             # Fail-closed; memory storage must not break chats
             return
 
-    def handle_user_message(self, user_message: str) -> str:
+    def handle_user_message(
+        self, user_message: str
+    ) -> tuple[str, Optional[str], Optional[Dict[str, Any]]]:
         # If chatter doesn't support world_facts, skip building context entirely
         supports_context = self._chatter_accepts_world_facts()
 
         merged_context: Optional[str] = None
+        relevance_payload: Optional[Dict[str, Any]] = None
         if supports_context:
             try:
-                weighted = weighted_retrieve(self.world_memory, user_message, k=4)
-                facts_str = format_world_facts(weighted)
-                npc_snaps = self.world_memory.get_relevant_npc_snapshots(
-                    user_message, k=2
+                # Retrieve memories with scores and thresholds
+                mem_scored = weighted_retrieve_with_scores(
+                    self.world_memory, user_message, k=4, min_total_score=0.25
                 )
-                npc_cards = format_npc_cards(npc_snaps)
+                facts_str = format_world_facts([m["_raw"] for m in mem_scored])
+
+                # Retrieve NPC snapshots with scores and thresholds
+                npc_scored = self.world_memory.get_relevant_npc_snapshots_scored(
+                    user_message, k=2, min_score=0.35
+                )
+                npc_cards = format_npc_cards([n["_raw"] for n in npc_scored])
 
                 if npc_cards and facts_str:
                     merged_context = npc_cards + "\n\n" + facts_str
@@ -93,23 +101,54 @@ class ConversationService:
                     merged_context = npc_cards
                 else:
                     merged_context = facts_str or None
+
+                # Build lightweight relevance payload for UI/debug
+                relevance_payload = {
+                    "memories": [
+                        {
+                            "summary": m.get("summary", ""),
+                            "type": m.get("type", "unknown"),
+                            "entities": m.get("entities", []),
+                            "score": round(float(m.get("total", 0.0)), 2),
+                        }
+                        for m in mem_scored
+                    ],
+                    "npcs": [
+                        {
+                            "name": n.get("name", "Unknown"),
+                            "intent": n.get("intent"),
+                            "last_seen_location": n.get("last_seen_location"),
+                            "relationship_to_player": n.get(
+                                "relationship_to_player", "unknown"
+                            ),
+                            "score": round(float(n.get("score", 0.0)), 2),
+                        }
+                        for n in npc_scored
+                    ],
+                }
             except Exception:
                 merged_context = None
+                relevance_payload = None
 
         # Call chatter with or without world_facts depending on signature support
-        try:
-            if supports_context and merged_context is not None:
+        if supports_context and merged_context is not None:
+            try:
                 dm_response = self.chatter.chat(
                     user_message, world_facts=merged_context
                 )
-            else:
-                dm_response = self.chatter.chat(user_message)
-        except TypeError:
-            # Fallback if signature mismatch
+            except TypeError as e:
+                # Only fallback on actual signature mismatch for world_facts
+                msg = str(e)
+                if "world_facts" in msg and "unexpected keyword" in msg:
+                    dm_response = self.chatter.chat(user_message)
+                else:
+                    # Re-raise to avoid masking real TypeError inside chat()
+                    raise
+        else:
             dm_response = self.chatter.chat(user_message)
 
         # Only analyze/store memory if chatter provides analyzer and we could build context
         if supports_context:
             self._maybe_analyze_and_store_memory(user_message, dm_response)
 
-        return dm_response
+        return dm_response, merged_context, relevance_payload

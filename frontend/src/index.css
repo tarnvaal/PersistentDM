@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+:root { --chat-offset: 160px; --drawer-width: 320px; }
+
 /* Gunmetal & Orange Dark Theme */
 body {
   /* NEW: Using Inter as the main font */
@@ -7,16 +9,23 @@ body {
   background-color: #1a1a1a; /* Dark background */
   color: #f0f0f0;
   margin: 0;
-  padding: 1rem;
+  padding: 1rem 1rem 0;
   box-sizing: border-box;
 }
 
 /* Header Styling */
 .header-container {
-  text-align: center;
   margin-bottom: 2rem;
   padding: 0 1rem;
 }
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.header-icon { width: 40px; height: 55px; border-radius: 8px; }
+.header-text { text-align: center; }
 .header-title {
   /* Cyberpunk font */
   font-family: 'Audiowide', sans-serif;
@@ -32,6 +41,12 @@ body {
   letter-spacing: 1px;
   font-weight: 300;
   margin: 0;
+}
+
+/* Responsive typography for small screens */
+@media (max-width: 640px) {
+  .header-title { font-size: 1.25rem; }
+  .header-subtitle { font-size: 0.95rem; }
 }
 
 /* Legacy styles (chat moved to Tailwind but keeping these for safety) */

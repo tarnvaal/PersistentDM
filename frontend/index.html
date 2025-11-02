@@ -8,12 +8,24 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 
+  <style>
+    /* Critical inline styles to avoid white flash and oversized icon before app CSS loads */
+    html, body { background-color: #1a1a1a; margin: 0; }
+    .header-row { display: flex; align-items: center; justify-content: center; gap: 12px; }
+    .header-icon { width: 40px; height: 55px; border-radius: 8px; }
+    .header-text { text-align: center; }
+  </style>
 
 </head>
 <body>
   <header class="header-container">
-    <h1 class="header-title">Persistent Dungeon Master</h1>
-    <p class="header-subtitle">Explore any world you can imagine</p>
+    <div class="header-row">
+      <img src="/src/icon.png" alt="App icon" class="header-icon" />
+      <div class="header-text">
+        <h1 class="header-title">Persistent Dungeon Master</h1>
+        <p class="header-subtitle">Explore any world you can imagine</p>
+      </div>
+    </div>
   </header>
 
   <div id="root"></div>

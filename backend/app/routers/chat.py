@@ -13,6 +13,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+    context: str | None = None
+    relevance: dict | None = None
 
 
 class ClearRequest(BaseModel):
@@ -35,8 +37,8 @@ def clear_chat(req: ClearRequest):
 @router.post("", response_model=ChatResponse)
 def post_chat(req: ChatRequest, conversation=Depends(get_conversation_service)):
     try:
-        reply = conversation.handle_user_message(req.message)
-        return ChatResponse(reply=reply)
+        reply, context, relevance = conversation.handle_user_message(req.message)
+        return ChatResponse(reply=reply, context=context, relevance=relevance)
     except Exception as e:
         raise HTTPException(
             status_code=500,

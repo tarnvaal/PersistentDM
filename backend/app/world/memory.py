@@ -164,3 +164,50 @@ class WorldMemory:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [snap for (_, snap) in scored[:k]]
+
+    def get_relevant_npc_snapshots_scored(
+        self, query: str, k: int = 2, min_score: float | None = None
+    ) -> List[Dict[str, Any]]:
+        """Like get_relevant_npc_snapshots but returns score alongside snapshot and supports thresholding.
+
+        Returns list of dicts: {"name", "relationship_to_player", "last_seen_location", "intent", "score", "_raw"}
+        Ensures at least one item if any NPCs exist and threshold filters everything out.
+        """
+        if not self.npc_index:
+            return []
+        qvec = self.embed_fn(query)
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for snap in self.npc_index.values():
+            parts = [snap.get("name", "")]
+            parts.extend(snap.get("aliases", []) or [])
+            parts.append(snap.get("intent", "") or "")
+            parts.append(snap.get("last_seen_location", "") or "")
+            text = " | ".join([p for p in parts if p])
+            svec = self.embed_fn(text) if text else qvec
+            score = dot_sim(qvec, svec)
+            age_sec = max(0.0, time.time() - float(snap.get("last_seen_time", 0.0)))
+            recency = pow(0.5, age_sec / 600.0) * 0.05
+            scored.append((score + recency, snap))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if min_score is not None:
+            filtered = [row for row in scored if row[0] >= min_score]
+            scored = filtered if filtered else scored[:1]
+
+        top = scored[:k]
+        results: List[Dict[str, Any]] = []
+        for s, snap in top:
+            results.append(
+                {
+                    "name": snap.get("name", "Unknown"),
+                    "relationship_to_player": snap.get(
+                        "relationship_to_player", "unknown"
+                    ),
+                    "last_seen_location": snap.get("last_seen_location"),
+                    "intent": snap.get("intent"),
+                    "score": float(s),
+                    "_raw": snap,
+                }
+            )
+        return results

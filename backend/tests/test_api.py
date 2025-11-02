@@ -57,7 +57,8 @@ def test_health(client):
 def test_chat(client):
     response = client.post("/chat", json={"message": "Hello"})
     assert response.status_code == 200
-    assert response.json() == {"reply": "echo: Hello"}
+    data = response.json()
+    assert data["reply"] == "echo: Hello"
 
 
 def test_chat_requires_message(client):
@@ -101,7 +102,8 @@ def test_chat_rejects_missing_content_type(client, fake_chatter):
     response = client.post("/chat", content='{"message": "Hello"}')
     # FastAPI accepts valid JSON even without Content-Type header
     assert response.status_code == 200
-    assert response.json() == {"reply": "echo: Hello"}
+    data = response.json()
+    assert data["reply"] == "echo: Hello"
     assert fake_chatter.calls == ["Hello"]
 
 
@@ -109,7 +111,8 @@ def test_chat_with_empty_string(client, fake_chatter):
     """Test that empty string message is accepted (Pydantic allows it by default)."""
     response = client.post("/chat", json={"message": ""})
     assert response.status_code == 200
-    assert response.json() == {"reply": "echo: "}
+    data = response.json()
+    assert data["reply"] == "echo: "
     assert fake_chatter.calls == [""]
 
 
@@ -125,7 +128,8 @@ def test_chat_with_unicode(client, fake_chatter):
     message = "Hello 世界 🌍 emoji"
     response = client.post("/chat", json={"message": message})
     assert response.status_code == 200
-    assert response.json() == {"reply": f"echo: {message}"}
+    data = response.json()
+    assert data["reply"] == f"echo: {message}"
     assert fake_chatter.calls == [message]
 
 
@@ -134,7 +138,8 @@ def test_chat_with_long_message(client, fake_chatter):
     long_message = "A" * 10000
     response = client.post("/chat", json={"message": long_message})
     assert response.status_code == 200
-    assert response.json() == {"reply": f"echo: {long_message}"}
+    data = response.json()
+    assert data["reply"] == f"echo: {long_message}"
     assert fake_chatter.calls == [long_message]
 
 
@@ -163,7 +168,9 @@ def test_chat_response_format(client):
     data = response.json()
     assert "reply" in data
     assert isinstance(data["reply"], str)
-    assert len(data) == 1
+    assert "context" in data
+    # context can be None or a string
+    assert data["context"] is None or isinstance(data["context"], str)
 
 
 def test_chat_response_content_type(client):

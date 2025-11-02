@@ -46,6 +46,58 @@ def weighted_retrieve(
     return [m for (_, _, _, _, m) in top]
 
 
+def weighted_retrieve_with_scores(
+    world_memory: WorldMemory,
+    query: str,
+    k: int = 5,
+    min_total_score: float | None = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve memories with scores and optional thresholding.
+
+    Returns list of dicts: {"summary", "type", "entities", "_raw", "total", "similarity", "recency", "bonus"}
+    Only the top-k by total are returned, filtered by min_total_score if provided.
+    Ensures at least one item is returned if any base memories exist.
+    """
+    base = world_memory.retrieve(query, k=max(k * 2, 5))
+    if not base:
+        return []
+
+    now = time.time()
+    qvec = world_memory.embed_fn(query)
+
+    weighted: List[Tuple[float, float, float, float, Dict[str, Any]]] = []
+    for m in base:
+        score = dot_sim(qvec, m["vector"])  # similarity
+        age_sec = max(0.0, now - float(m.get("timestamp", now)))
+        recency = pow(0.5, age_sec / 600.0) * 0.05  # half-life ~10 min, max +0.05
+        bonus = _type_bonus(str(m.get("type", "")))
+        total = score + recency + bonus
+        weighted.append((total, score, recency, bonus, m))
+
+    weighted.sort(key=lambda x: x[0], reverse=True)
+    # Apply threshold if provided, but keep the single best if everything filters out
+    if min_total_score is not None:
+        filtered = [row for row in weighted if row[0] >= min_total_score]
+        weighted = filtered if filtered else weighted[:1]
+
+    top = weighted[:k]
+    results: List[Dict[str, Any]] = []
+    for total, score, recency, bonus, m in top:
+        results.append(
+            {
+                "summary": m.get("summary", ""),
+                "type": m.get("type", "unknown"),
+                "entities": m.get("entities", []),
+                "_raw": m,
+                "total": float(total),
+                "similarity": float(score),
+                "recency": float(recency),
+                "bonus": float(bonus),
+            }
+        )
+    return results
+
+
 def format_world_facts(
     memories: List[Dict[str, Any]] | None, char_cap: int = 800
 ) -> str:
