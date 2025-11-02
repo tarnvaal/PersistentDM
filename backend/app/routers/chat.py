@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..dependencies import get_conversation_service, reset_chatter
+from ..dependencies import get_conversation_service, reset_chatter, get_world_memory
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -29,6 +29,10 @@ class ClearResponse(BaseModel):
 def clear_chat(req: ClearRequest):
     if req.clear:
         reset_chatter()
+        # Also clear world memory and NPC index so the game state resets
+        wm = get_world_memory()
+        wm.memories.clear()
+        wm.npc_index.clear()
         return ClearResponse(success=True)
     else:
         return ClearResponse(success=False)
