@@ -156,7 +156,7 @@ function App() {
               >
                 <div
                   className={
-                    `relative px-4 py-2 my-1 rounded-[20px] whitespace-normal break-words min-h-[64px] leading-[1.45] font-medium text-[1.05rem] ${
+                    `relative px-4 py-2 my-1 rounded-[20px] whitespace-normal break-words leading-[1.45] font-medium text-[1.05rem] ${
                       !isUser ? "pb-8 " : ""
                     }` +
                     (isUser
