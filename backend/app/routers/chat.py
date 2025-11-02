@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -44,7 +45,8 @@ def post_chat(req: ChatRequest, conversation=Depends(get_conversation_service)):
         reply, context, relevance = conversation.handle_user_message(req.message)
         return ChatResponse(reply=reply, context=context, relevance=relevance)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "Internal server error", "message": str(e)},
-        )
+        expose = os.getenv("PDM_DEBUG_ERRORS", "1") == "1"
+        detail = {"error": "Internal server error"}
+        if expose:
+            detail["message"] = str(e)
+        raise HTTPException(status_code=500, detail=detail)

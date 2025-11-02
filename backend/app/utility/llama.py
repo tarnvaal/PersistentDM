@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import os
+import threading
 from typing import List, cast
 from llama_cpp import (
     Llama,
@@ -19,7 +20,8 @@ MODEL_PATH = "~/dev/llm/Harbinger-24B-Q5_K_M.gguf"
 # Allow context size override via env; default to 16k for tighter history window
 MAX_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16384"))
 TOKEN_BUFFER_SIZE = 2048
-MIN_FREE_VRAM_MIB = 23400  # tune this to whatever you actually need
+MIN_FREE_VRAM_MIB = int(os.getenv("MIN_FREE_VRAM_MIB", "23400"))
+INIT_WAIT_SECS = float(os.getenv("LLAMA_INIT_WAIT_SECS", "300"))
 
 LOG_CB_TYPE = CFUNCTYPE(None, c_int, c_char_p, c_void_p)
 
@@ -42,12 +44,21 @@ class Chatter:
     # class-level shared state
     _llm: Llama | None = None
     _init_error: Exception | None = None
-    _initialized = False  # optional clarity flag
+    _initialized = False  # set True after a completed initialization attempt
+    _init_lock = threading.Lock()
+    _ready_event = threading.Event()
 
     def __init__(self, model_path: str):
         # step 1: ensure model is initialized at class level
         if not Chatter._initialized:
-            Chatter._initialize_model(model_path)
+            # Only one thread initializes; others wait until ready or timeout
+            with Chatter._init_lock:
+                if not Chatter._initialized:
+                    Chatter._initialize_model(model_path)
+            # mark that we've attempted init; waiters will observe ready_event
+        if not Chatter._ready_event.is_set():
+            # Wait for initialization to complete (success or failure)
+            Chatter._ready_event.wait(timeout=INIT_WAIT_SECS)
 
         # if model init failed earlier raise now
         if Chatter._init_error is not None:
@@ -94,18 +105,20 @@ class Chatter:
         if cls._initialized:
             return  # already tried
 
-        cls._initialized = True  # mark that we attempted init
-
         # check GPU first
         free_vram = get_free_vram_mib()
         if free_vram is None:
             cls._init_error = RuntimeError("No GPU detected. GPU is required.")
+            cls._initialized = True
+            cls._ready_event.set()
             return
         if free_vram < MIN_FREE_VRAM_MIB:
             cls._init_error = RuntimeError(
                 f"Not enough VRAM free. Free VRAM: {free_vram} MiB. "
                 f"Required: {MIN_FREE_VRAM_MIB} MiB."
             )
+            cls._initialized = True
+            cls._ready_event.set()
             return
 
         # try to actually build llama
@@ -113,13 +126,16 @@ class Chatter:
             cls._llm = Llama(
                 model_path=expanduser(model_path),
                 n_ctx=MAX_TOKENS,
-                n_gpu_layers=-1,  # put all layers on GPU
+                n_gpu_layers=-1,  # put all layers on GPU (no CPU fallback)
                 n_batch=512,
                 verbose=False,
             )
         except Exception as e:
             cls._init_error = e
             cls._llm = None
+        finally:
+            cls._initialized = True
+            cls._ready_event.set()
 
     def _get_token_count(self, content: str) -> int:
         try:

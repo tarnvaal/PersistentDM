@@ -15,6 +15,7 @@ PersistentDM implements an AI dungeon master for text-based role-playing games. 
 - React frontend with Tailwind CSS
 - Llama.cpp integration for local LLM inference
 - Automated development environment setup
+ - Optional debug fields in responses for the dev UI (context snippets and relevance scores)
 
 ## Architecture
 
@@ -143,7 +144,10 @@ See `requests.rest` for example API calls.
 - Service retrieves relevant memories (weighted by similarity/recency/type) and NPC snapshots
 - Service formats World Facts and NPC Cards and injects them as a transient system message
 - `Chatter.chat` generates the DM reply; the service analyzes the turn and stores new durable memories when confidence is high
-- Response returns `{ "reply": string }` (no world/memory details are exposed to the client)
+- Response returns `{ "reply": string, "context"?: string | null, "relevance"?: object | null }`
+  - `context` is the exact world context injected into the model for that turn
+  - `relevance` contains lightweight memory/NPC relevance info
+  - These fields are intended for development/debugging and are shown in the dev UI
 
 ## Testing
 
@@ -241,7 +245,10 @@ Key dependencies in `frontend/package.json`:
 
 - `MODEL_PATH`: Path to GGUF model file
 - `FRONTEND_PORT`: Frontend development port (default: 5173)
-- `API_BASE_URL`: Backend API URL for frontend
+- `VITE_API_BASE_URL`: Frontend override for the backend API URL (e.g., `http://localhost:8000`). If not set, the frontend infers the host and uses port 8000.
+- `MIN_FREE_VRAM_MIB`: Minimum free VRAM (MiB) required before attempting model load (default: 23400). Prevents accidental CPU fallback; all layers remain on GPU.
+- `LLAMA_INIT_WAIT_SECS`: How long other requests will wait for the singleton model to finish initializing (default: 300).
+- `PDM_DEBUG_ERRORS`: If "1" (default), API 500 responses include error details; set to "0" in production to hide internal messages.
 
 ## Troubleshooting
 
@@ -255,4 +262,11 @@ The development scripts automatically handle common Vite port ranges (5173-5180)
 
 ### Model Loading
 
-Model loading can take several minutes on first startup. The health endpoint will not respond until the model is fully loaded.
+Model loading can take several minutes on first startup. The app preloads the model asynchronously at startup; the `/health` endpoint responds immediately. The first chat request may take longer while the model finishes loading. The model is a singleton in-process; concurrent requests will wait for initialization up to `LLAMA_INIT_WAIT_SECS`.
+
+### State & Persistence
+- World memory and NPC snapshots live in-process only (not persisted). They are cleared by `POST /chat/clear`.
+- This project assumes a single-process, single-thread server (default Uvicorn). Running multiple threads/workers requires external persistence and coordination; current in-memory structures are not thread-safe.
+
+### Security/Operations Notes
+- The `POST /chat/clear` endpoint resets all in-memory state and is meant for development only. Do not expose it publicly without authentication.
