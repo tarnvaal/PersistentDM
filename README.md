@@ -2,6 +2,8 @@
 
 A text-based interactive fiction system that uses large language models to generate persistent world states and narrative responses.
 
+Supports reusable ingest shards: persist world knowledge (locations + memories) across sessions and load them on demand.
+
 ## Overview
 
 PersistentDM implements an AI dungeon master for text-based role-playing games. The system maintains persistent world state through a vector-based memory system and provides conversational interfaces for game interactions.
@@ -18,6 +20,7 @@ PersistentDM implements an AI dungeon master for text-based role-playing games. 
  - Optional debug fields in responses for the dev UI (context snippets and relevance scores)
  - Location graph (locations + exits) injected into prompts for spatial grounding
  - LLM-guided movement detection and dynamic graph growth (confidence-gated)
+ - Ingest shards: persist reusable world subgraphs and memories on disk; list/name/load/delete via API/UI
 
 ## Architecture
 
@@ -29,6 +32,7 @@ PersistentDM implements an AI dungeon master for text-based role-playing games. 
  - **World Graph**: In-memory location graph (locations + exits) used to ground navigation; included in prompt context
 - **Conversation Orchestration**: `ConversationService` composes `Chatter` and `WorldMemory`, retrieves relevant memories and NPC snapshots, formats World Facts + NPC Cards, injects them into the LLM call, and persists new memories
 - **Model**: Harbinger-24B-GGUF (quantized for ~23GB VRAM usage)
+ - **Ingest Layer (Shards)**: Persistent, reusable world shards (locations + memories) stored under `data/ingests` (configurable via `INGESTS_DIR`). Loaded at startup and included in retrieval without mutating session history.
 
 ### Frontend
 
@@ -140,6 +144,10 @@ cd frontend && npm run preview
 - `POST /chat/clear` - Clear conversation history
 - `POST /ingest/upload` - Upload raw text to be processed
 - `GET /ingest/stream?id=...` - Server-Sent Events stream for chunked ingestion
+ - `GET /ingest/list` - List persisted ingest shards (id, name, counts, size)
+ - `PUT /ingest/shard/{ingest_id}/name` - Rename a shard
+ - `POST /ingest/shard/{ingest_id}/load` - Load a shard (locations + memories) into memory
+ - `DELETE /ingest/shard/{ingest_id}` - Delete a shard from disk
 
 See `requests.rest` for example API calls.
 
@@ -166,6 +174,8 @@ See `requests.rest` for example API calls.
   - `hygiene` — results of location-graph hygiene (merged/pruned counts)
   - `done` — final stats: words, lines, steps
 - Cancellation: closing the EventSource (e.g., clicking the trashcan/clear button) stops processing at the start of the next chunk; `POST /chat/clear` also resets memories, NPC index, and the location graph.
+
+On completion, the current ingest run is persisted as a shard on disk so it survives restarts. Persisted shards can be listed, renamed, loaded, and deleted via the endpoints above; when loaded, their locations and memories are merged into the retrieval context without altering session history.
 
 Example (terminal):
 ```bash
@@ -278,6 +288,7 @@ Key dependencies in `frontend/package.json`:
 - `MIN_FREE_VRAM_MIB`: Minimum free VRAM (MiB) required before attempting model load (default: 23400). Prevents accidental CPU fallback; all layers remain on GPU.
 - `LLAMA_INIT_WAIT_SECS`: How long other requests will wait for the singleton model to finish initializing (default: 300).
 - `PDM_DEBUG_ERRORS`: If "1" (default), API 500 responses include error details; set to "0" in production to hide internal messages.
+- `INGESTS_DIR`: Absolute or relative directory where ingest shards are persisted and loaded from (default: `data/ingests` under the project root).
 
 ## Troubleshooting
 
