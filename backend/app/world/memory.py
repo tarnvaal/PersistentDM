@@ -22,6 +22,7 @@ class WorldMemory:
         npc: Dict[str, Any] | None = None,
         dedupe_check: bool = False,
         similarity_threshold: float = 0.85,
+        source_context: Optional[str] = None,
     ) -> str:
         """Store a durable world fact."""
         if dedupe_check and self.memories:
@@ -42,6 +43,8 @@ class WorldMemory:
             "type": mem_type,
             "timestamp": time.time(),
             "vector": vec,
+            # Optional short provenance of what happened when this was saved
+            "source_context": source_context,
         }
 
         self.memories.append(entry)

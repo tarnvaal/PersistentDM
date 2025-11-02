@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from ..dependencies import get_conversation_service
 from ..world.memory_utils import sanitize_entities
 from ..world.memory import LocationNode
+from ..world.context_builder import summarize_memory_context
 
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -164,11 +165,19 @@ def stream(
                         entities = sanitize_entities(mem.get("entities"))
                         npc_payload = mem.get("npc")
                         try:
+                            # Provide a brief provenance for explanations
+                            # Use a short snippet of the current chunk as source context
+                            snippet = (chunk_text or "").strip()
+                            if len(snippet) > 300:
+                                snippet = snippet[:299] + "…"
+                            source_context = f"Ingested: {snippet}" if snippet else None
+
                             world_memory.add_memory(
                                 mem.get("summary", ""),
                                 entities,
                                 mem.get("type", "other"),
                                 npc=npc_payload,
+                                source_context=source_context,
                             )
                             # If this appears to be a location, upsert a node for hygiene to work
                             if str(mem.get("type", "")).lower() == "location":
@@ -190,6 +199,13 @@ def stream(
                                     )
 
                             try:
+                                explanation = (
+                                    summarize_memory_context(
+                                        {"source_context": source_context}
+                                    )
+                                    if source_context
+                                    else None
+                                )
                                 yield _sse(
                                     "saved",
                                     {
@@ -200,6 +216,7 @@ def stream(
                                         if isinstance(npc_payload, dict)
                                         else None,
                                         "confidence": conf,
+                                        "explanation": explanation,
                                     },
                                 )
                             except GeneratorExit:

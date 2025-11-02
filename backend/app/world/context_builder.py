@@ -165,3 +165,37 @@ def format_location_context(world_memory: WorldMemory, char_cap: int = 600) -> s
     if len(out) > char_cap:
         return out[:char_cap] + "..."
     return out
+
+
+def summarize_memory_context(memory: Dict[str, Any], max_len: int = 160) -> str | None:
+    """Return a concise one-line explanation of what happened when the memory was saved.
+
+    Uses the optional "source_context" captured at creation time in the form:
+    "Player said: ...\n\nDM responded: ...". Falls back to None if unavailable.
+    """
+    ctx = (memory or {}).get("source_context")
+    if not isinstance(ctx, str) or not ctx.strip():
+        return None
+    # Extract the player and DM lines if present
+    player_part = None
+    dm_part = None
+    for line in ctx.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("player said:") and player_part is None:
+            player_part = line[len("player said:") :].strip()
+        elif line.lower().startswith("dm responded:") and dm_part is None:
+            dm_part = line[len("dm responded:") :].strip()
+    if player_part or dm_part:
+        parts: list[str] = []
+        if player_part:
+            parts.append(f"Player: {player_part}")
+        if dm_part:
+            parts.append(f"DM: {dm_part}")
+        text = "; ".join(parts)
+    else:
+        text = ctx.strip()
+    # Compact to a single line and trim
+    one_line = " ".join(text.split())
+    return (one_line[: max_len - 1] + "…") if len(one_line) > max_len else one_line

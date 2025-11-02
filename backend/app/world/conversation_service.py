@@ -10,6 +10,7 @@ from .context_builder import (
     format_world_facts,
     format_npc_cards,
     format_location_context,
+    summarize_memory_context,
 )
 from .memory_utils import sanitize_entities
 
@@ -69,6 +70,7 @@ class ConversationService:
                 entities,
                 summary.get("type", "other"),
                 npc=npc_payload,
+                source_context=conversation_context.get("context"),
             )
             return {
                 "summary": summary.get("summary", ""),
@@ -124,6 +126,7 @@ class ConversationService:
                             "type": m.get("type", "unknown"),
                             "entities": m.get("entities", []),
                             "score": round(float(m.get("total", 0.0)), 2),
+                            "explanation": summarize_memory_context(m.get("_raw", {})),
                         }
                         for m in mem_scored
                     ],

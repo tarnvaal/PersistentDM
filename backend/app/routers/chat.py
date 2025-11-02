@@ -115,6 +115,9 @@ def stream_chat(
                                 "type": m.get("type", "unknown"),
                                 "entities": m.get("entities", []),
                                 "score": round(float(m.get("total", 0.0)), 2),
+                                "explanation": summarize_memory_context(
+                                    m.get("_raw", {})
+                                ),
                             }
                             for m in mem_scored
                         ],
@@ -174,6 +177,7 @@ def stream_chat(
         format_world_facts,
         format_npc_cards,
         format_location_context,
+        summarize_memory_context,
     )
 
     return StreamingResponse(generate(), media_type="text/event-stream")

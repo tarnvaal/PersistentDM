@@ -475,6 +475,9 @@ function App() {
                                         {typeof c.data?.confidence === "number" && (
                                           <div>Confidence: {c.data.confidence}</div>
                                         )}
+                                        {c.data?.explanation && (
+                                          <div className="mt-1 italic opacity-80">{c.data.explanation}</div>
+                                        )}
                                       </div>
                                     )}
                                     {c.kind === "hygiene" && (
@@ -574,6 +577,9 @@ function App() {
                                     <span className="opacity-60"> (entities: {m.entities.join(", ")})</span>
                                   )}
                                   <span className="opacity-60"> — score {m.score?.toFixed ? m.score.toFixed(2) : m.score}</span>
+                                  {m.explanation && (
+                                    <div className="opacity-70 mt-0.5 italic">{m.explanation}</div>
+                                  )}
                                 </li>
                               ))}
                             </ul>
