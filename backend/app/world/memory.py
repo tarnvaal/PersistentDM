@@ -1,6 +1,9 @@
 import time
-import uuid
+import os
+import json
 from typing import List, Dict, Any, Tuple, Optional
+from glob import glob
+import uuid
 
 from ..utility.embeddings import dot_sim
 
@@ -13,6 +16,84 @@ class WorldMemory:
         self.npc_index: Dict[str, Dict[str, Any]] = {}
         # Simple in-process location graph
         self.location_graph = WorldGraph()
+        # Ingest layer (persistent shards)
+        self.ingest_subgraphs: Dict[str, Dict[str, "LocationNode"]] = {}
+        self.ingest_memories: Dict[str, List[Dict[str, Any]]] = {}
+        self.ingest_names: Dict[str, str] = {}
+
+    # ---------------- Ingest Layer helpers ----------------
+    def ensure_ingest_shard(self, ingest_id: str) -> None:
+        if ingest_id not in self.ingest_subgraphs:
+            self.ingest_subgraphs[ingest_id] = {}
+        if ingest_id not in self.ingest_memories:
+            self.ingest_memories[ingest_id] = []
+
+    def add_ingest_memory(self, ingest_id: str, memory_dict: Dict[str, Any]) -> None:
+        self.ensure_ingest_shard(ingest_id)
+        self.ingest_memories[ingest_id].append(memory_dict)
+
+    def upsert_ingest_location(self, ingest_id: str, node: "LocationNode") -> None:
+        self.ensure_ingest_shard(ingest_id)
+        self.ingest_subgraphs[ingest_id][node.name] = node
+
+    def set_ingest_name(self, ingest_id: str, name: str) -> None:
+        if not isinstance(name, str):
+            return
+        cleaned = " ".join(name.strip().split())
+        if cleaned:
+            self.ingest_names[ingest_id] = cleaned[:120]
+
+    def persist_ingest_shard(
+        self, ingest_id: str, base_dir: Optional[str] = None
+    ) -> None:
+        """Write a single ingest shard to disk as JSON. Best-effort; silent on error."""
+        try:
+            base = base_dir or os.getenv("INGESTS_DIR", "./data/ingests")
+            os.makedirs(base, exist_ok=True)
+            subgraph = self.ingest_subgraphs.get(ingest_id, {})
+            memories = self.ingest_memories.get(ingest_id, [])
+            payload = {
+                "name": self.ingest_names.get(ingest_id),
+                "subgraph": {name: node.to_dict() for name, node in subgraph.items()},
+                "memories": memories,
+            }
+            path = os.path.join(base, f"{ingest_id}.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            # Fail-closed: persistence must not crash the server
+            return
+
+    def load_ingest_shards(self, base_dir: Optional[str] = None) -> None:
+        """Load all shards from disk into ingest layer. Best-effort; silent on error."""
+        try:
+            base = base_dir or os.getenv("INGESTS_DIR", "./data/ingests")
+            os.makedirs(base, exist_ok=True)
+            for fp in glob(os.path.join(base, "*.json")):
+                try:
+                    ingest_id = os.path.splitext(os.path.basename(fp))[0]
+                    with open(fp, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    subgraph_raw = data.get("subgraph", {}) or {}
+                    memories_raw = data.get("memories", []) or []
+                    name_raw = data.get("name")
+                    shard_graph: Dict[str, LocationNode] = {}
+                    for name, nd in subgraph_raw.items():
+                        try:
+                            shard_graph[name] = LocationNode.from_dict(nd)
+                        except Exception:
+                            continue
+                    self.ingest_subgraphs[ingest_id] = shard_graph
+                    self.ingest_memories[ingest_id] = [
+                        m for m in memories_raw if isinstance(m, dict)
+                    ]
+                    if isinstance(name_raw, str) and name_raw.strip():
+                        self.ingest_names[ingest_id] = name_raw.strip()[:120]
+                except Exception:
+                    # keep loading others
+                    continue
+        except Exception:
+            return
 
     def add_memory(
         self,
@@ -130,10 +211,15 @@ class WorldMemory:
         # confidence (max)
         conf = npc.get("confidence")
         try:
-            cval = float(conf)
-            snapshot["confidence"] = max(float(snapshot.get("confidence", 0.0)), cval)
+            cval = float(conf) if conf is not None else 0.0
         except Exception:
-            pass
+            cval = 0.0
+        try:
+            prev = snapshot.get("confidence", 0.0)
+            prev_f = float(prev) if prev is not None else 0.0
+            snapshot["confidence"] = max(prev_f, cval)
+        except Exception:
+            snapshot["confidence"] = cval
 
         # append concise history line
         history_line = source_entry.get("summary")
@@ -227,6 +313,21 @@ class LocationEdge:
         self.description = description
         self.travel_verb = travel_verb
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "to": self.to_location,
+            "description": self.description,
+            "travel_verb": self.travel_verb,
+        }
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "LocationEdge":
+        return LocationEdge(
+            to_location=str(d.get("to", "")),
+            description=str(d.get("description", "")),
+            travel_verb=str(d.get("travel_verb", "go")),
+        )
+
 
 class LocationNode:
     def __init__(self, name: str, description: str = ""):
@@ -234,6 +335,32 @@ class LocationNode:
         self.description = description
         self.connections: List[LocationEdge] = []
         self.npcs_present: List[str] = []
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "aliases": [],  # aliases not modeled here; placeholder for forward-compat
+            "connections": [e.to_dict() for e in self.connections],
+            "npcs_present": list(self.npcs_present),
+        }
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "LocationNode":
+        node = LocationNode(
+            name=str(d.get("name", "")),
+            description=str(d.get("description", "")),
+        )
+        conns = d.get("connections", []) or []
+        for e in conns:
+            try:
+                node.connections.append(LocationEdge.from_dict(e))
+            except Exception:
+                continue
+        npcs = d.get("npcs_present", []) or []
+        if isinstance(npcs, list):
+            node.npcs_present = [str(x) for x in npcs if isinstance(x, str)]
+        return node
 
 
 class WorldGraph:

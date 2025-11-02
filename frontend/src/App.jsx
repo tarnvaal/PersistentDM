@@ -110,6 +110,8 @@ function App() {
   const [sending, setSending] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [pasteOpen, setPasteOpen] = useState(false);
+  const [savedOpen, setSavedOpen] = useState(false);
+  const [savedIngests, setSavedIngests] = useState([]);
   const [pasteText, setPasteText] = useState("");
   const messagesRef = useRef(null);
   const activeIngestStreamsRef = useRef(new Map()); // Map of ingestId -> {es: EventSource, timer: interval}
@@ -123,6 +125,23 @@ function App() {
     // Scroll to bottom on new messages
     el.scrollTop = el.scrollHeight;
   }, [history]);
+
+  // Load saved ingests when modal opens
+  useEffect(() => {
+    if (!savedOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/ingest/list`);
+        if (!res.ok) throw new Error("list not ok");
+        const data = await res.json();
+        if (!cancelled) setSavedIngests(Array.isArray(data.ingests) ? data.ingests : []);
+      } catch (_) {
+        if (!cancelled) setSavedIngests([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [savedOpen, apiBase]);
 
   // Poll model status and update the header dot
   useEffect(() => {
@@ -343,6 +362,19 @@ function App() {
                 <path d="M12 5v14M5 12h14" />
               </svg>
             </button>
+            <button
+              id="btn-saved-ingests"
+              type="button"
+              className="inline-flex items-center justify-center w-9 h-9 rounded-[10px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] transition-colors ease-linear hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600] active:translate-y-px"
+              aria-label="Show saved ingests"
+              onClick={() => setSavedOpen(true)}
+              title="Show saved ingests"
+            >
+              {/* Folder icon */}
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+              </svg>
+            </button>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -389,7 +421,7 @@ function App() {
                   <div
                     className={
                       `relative px-4 py-2 my-1 rounded-[20px] whitespace-normal break-words leading-[1.45] font-medium text-[1.05rem] pb-8 ` +
-                      "max-w-[90%] min-w-[300px] bg-[#4a555c] text-[#f1f1f1]"
+                      "max-w-[90%] min-w-[390px] bg-[#4a555c] text-[#f1f1f1]"
                     }
                   >
                     {item.content}
@@ -407,20 +439,22 @@ function App() {
                     </div>
                   </div>
                   <div className="mt-1 text-xs opacity-70 flex items-center gap-2">
-                    <button
-                      type="button"
-                      className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
-                      aria-label={item.detailsOpen ? "Collapse details" : "Expand details"}
-                      aria-expanded={!!item.detailsOpen}
-                      onClick={() => setHistory((h) => h.map((m) => (
-                        m.id === item.id ? { ...m, detailsOpen: !m.detailsOpen } : m
-                      )))}
-                    >
-                      <svg className={`w-3.5 h-3.5 transition-transform ${!item.detailsOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M19 7l-7 7-7-7" />
-                        <path d="M19 13l-7 7-7-7" />
-                      </svg>
-                    </button>
+                    {item.showDetails !== false && (
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
+                        aria-label={item.detailsOpen ? "Collapse details" : "Expand details"}
+                        aria-expanded={!!item.detailsOpen}
+                        onClick={() => setHistory((h) => h.map((m) => (
+                          m.id === item.id ? { ...m, detailsOpen: !m.detailsOpen } : m
+                        )))}
+                      >
+                        <svg className={`w-3.5 h-3.5 transition-transform ${!item.detailsOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M19 7l-7 7-7-7" />
+                          <path d="M19 13l-7 7-7-7" />
+                        </svg>
+                      </button>
+                    )}
                     {meta.totalSteps != null && (
                       <span>Chunk {Math.min((meta.step || 0) + 1, meta.totalSteps)} / {meta.totalSteps}</span>
                     )}
@@ -891,8 +925,229 @@ function App() {
           </div>
         </div>
       )}
+      {savedOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="saved-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        >
+          <div className="bg-[#2C3539] border border-[#444] rounded-xl w-[min(92vw,560px)] h-[min(70vh,520px)] shadow-[0_8px_24px_rgba(0,0,0,0.45)] flex flex-col">
+            <div className="px-4 py-3 border-b border-[#3a454b] flex items-center justify-between">
+              <h2 id="saved-title" className="text-[#f0f0f0] text-base font-semibold">Saved ingests</h2>
+              <button
+                type="button"
+                className="px-2 py-1 text-sm rounded-md border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
+                onClick={() => setSavedOpen(false)}
+              >Close</button>
+            </div>
+            <div className="p-3 flex-1 overflow-y-auto">
+              {savedIngests.length === 0 ? (
+                <div className="text-sm opacity-70">No saved ingests found.</div>
+              ) : (
+                <ul className="divide-y divide-[#3a454b]">
+                  {savedIngests.map((it) => (
+                    <li key={it.id} className="py-2 flex items-center justify-between">
+                      <div>
+                        <div className="text-[#f0f0f0] text-sm font-medium">{it.name || it.id}</div>
+                        <div className="text-xs opacity-60">
+                          {(() => {
+                            const humanBytes = (n) => {
+                              if (typeof n !== "number" || !isFinite(n) || n < 0) return null;
+                              if (n < 1024) return `${n} B`;
+                              if (n < 1024 * 1024) return `${(n/1024).toFixed(1)} KB`;
+                              return `${(n/1024/1024).toFixed(1)} MB`;
+                            };
+                            const b = humanBytes(it.bytes);
+                            const parts = [
+                              (typeof it.locations === "number") ? `${it.locations} locations` : null,
+                              (typeof it.memories === "number") ? `${it.memories} memories` : null,
+                              b ? `(${b})` : null,
+                            ].filter(Boolean);
+                            return parts.join(" • ");
+                          })()}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {/* Rename */}
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center w-7 h-7 rounded-[8px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600]"
+                          title="Rename"
+                          onClick={async () => {
+                            const current = it.name || it.id;
+                            const next = window.prompt("Rename ingest", current);
+                            if (!next) return;
+                            try {
+                              const res = await fetch(`${apiBase}/ingest/shard/${encodeURIComponent(it.id)}/name`, {
+                                method: "PUT",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ name: next }),
+                              });
+                              if (res.ok) {
+                                const data = await res.json();
+                                setSavedIngests((arr) => arr.map((x) => (x.id === it.id ? { ...x, name: data.name } : x)));
+                              }
+                            } catch (_) {}
+                          }}
+                        >
+                          {/* Pencil icon */}
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M12 20h9" />
+                            <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                          </svg>
+                        </button>
+                        {/* Load */}
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center w-7 h-7 rounded-[8px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#26343b] hover:border-[#2ecc71] hover:text-[#2ecc71]"
+                          title="Load into world"
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`${apiBase}/ingest/shard/${encodeURIComponent(it.id)}/load`, { method: "POST" });
+                              if (res.ok) {
+                                const info = await res.json();
+                                // Reload list to reflect any changes
+                                try {
+                                  const data = await (await fetch(`${apiBase}/ingest/list`)).json();
+                                  setSavedIngests(Array.isArray(data.ingests) ? data.ingests : []);
+                                } catch (_) {}
+                                // Post chat bubble summarizing the load
+                                const name = info.name || it.name || it.id;
+                                const locs = typeof info.locations === "number" ? info.locations : undefined;
+                                const mems = typeof info.memories === "number" ? info.memories : undefined;
+                                const bytes = typeof info.bytes === "number" ? info.bytes : undefined;
+                                const humanBytes = (n) => {
+                                  if (typeof n !== "number" || !isFinite(n) || n < 0) return null;
+                                  if (n < 1024) return `${n} B`;
+                                  if (n < 1024 * 1024) return `${(n/1024).toFixed(1)} KB`;
+                                  return `${(n/1024/1024).toFixed(1)} MB`;
+                                };
+                                const sizeStr = humanBytes(bytes);
+                                const parts = [
+                                  `Loaded: ${name}`,
+                                  locs != null ? `${locs} locations` : null,
+                                  mems != null ? `${mems} memories` : null,
+                                  sizeStr ? `(${sizeStr})` : null,
+                                ].filter(Boolean);
+                                const msgId = `loaded-${it.id}-${Date.now()}`;
+                                setHistory((h) => [
+                                  ...h,
+                                  {
+                                    role: "assistant",
+                                    id: msgId,
+                                    type: "ingest",
+                                    content: parts.join(" — "),
+                                    ready: true,
+                                    progress: 1,
+                                    loop: 0,
+                                    stats: { steps: 1 },
+                                    checkpoints: [
+                                      { kind: "checkpoint", step: 1, summary: `Shard loaded: ${name}`, data: { locations: locs, memories: mems, bytes } },
+                                      { kind: "info", summary: `locations ${locs ?? "?"} • memories ${mems ?? "?"}`, data: { approxTokens: undefined, windowWords: undefined, strideWords: undefined, totalSteps: 1, checkpointTokenInterval: undefined } },
+                                    ],
+                                    detailsOpen: false,
+                                    showDetails: false,
+                                  },
+                                ]);
+                              }
+                            } catch (_) {}
+                          }}
+                        >
+                          {/* Link/attach icon */}
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M10 13a5 5 0 0 0 7.07 0l3.54-3.54a5 5 0 0 0-7.07-7.07L11 4" />
+                            <path d="M14 11a5 5 0 0 0-7.07 0L3.39 14.54a5 5 0 0 0 7.07 7.07L13 20" />
+                          </svg>
+                        </button>
+                        {/* Delete with 1.5s hold */}
+                        <HoldToDeleteButton id={it.id} onConfirm={async () => {
+                          try {
+                            const res = await fetch(`${apiBase}/ingest/shard/${encodeURIComponent(it.id)}`, { method: "DELETE" });
+                            if (res.ok) setSavedIngests((arr) => arr.filter((x) => x.id !== it.id));
+                          } catch (_) {}
+                        }} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
 export default App;
+
+function HoldToDeleteButton({ id, onConfirm }) {
+  const HOLD_MS = 1500;
+  const [progress, setProgress] = useState(0);
+  const rafRef = useRef(null);
+  const startRef = useRef(null);
+  const activeRef = useRef(false);
+
+  const stop = () => {
+    activeRef.current = false;
+    startRef.current = null;
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    setProgress(0);
+  };
+
+  const step = (ts) => {
+    if (!activeRef.current) return;
+    if (!startRef.current) startRef.current = ts;
+    const elapsed = ts - startRef.current;
+    const p = Math.min(1, elapsed / HOLD_MS);
+    setProgress(p);
+    if (p >= 1) {
+      stop();
+      if (typeof onConfirm === "function") onConfirm();
+      return;
+    }
+    rafRef.current = requestAnimationFrame(step);
+  };
+
+  const start = () => {
+    if (activeRef.current) return;
+    activeRef.current = true;
+    setProgress(0);
+    rafRef.current = requestAnimationFrame(step);
+  };
+
+  return (
+    <button
+      type="button"
+      className="relative inline-flex items-center justify-center w-7 h-7 rounded-[8px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] hover:bg-[#3a2a2a] hover:border-[#c0392b] hover:text-[#c0392b]"
+      title="Hold to delete"
+      onMouseDown={start}
+      onMouseUp={stop}
+      onMouseLeave={stop}
+      onTouchStart={(e) => { e.preventDefault(); start(); }}
+      onTouchEnd={(e) => { e.preventDefault(); stop(); }}
+    >
+      {/* Trash icon */}
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 6h18" />
+        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      </svg>
+      {/* Progress ring overlay for border animation */}
+      <svg className="absolute inset-0" viewBox="0 0 36 36" aria-hidden="true">
+        <circle cx="18" cy="18" r="16" fill="none" stroke="#3a454b" strokeWidth="2" />
+        <circle
+          cx="18" cy="18" r="16" fill="none"
+          stroke="#FF6600"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={`${Math.max(1, 2 * Math.PI * 16)} ${Math.max(1, 2 * Math.PI * 16)}`}
+          strokeDashoffset={`${(1 - progress) * 2 * Math.PI * 16}`}
+          style={{ transition: activeRef.current ? "none" : "stroke-dashoffset 150ms linear" }}
+        />
+      </svg>
+    </button>
+  );
+}

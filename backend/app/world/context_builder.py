@@ -18,6 +18,38 @@ def _type_bonus(mem_type: str) -> float:
     return 0.0
 
 
+def _gather_all_memories(world_memory: WorldMemory) -> List[Dict[str, Any]]:
+    """Return a combined list of session memories and all ingest memories.
+
+    Ensures each memory has an embedding vector (computes on demand for ingest entries).
+    """
+    combined: List[Dict[str, Any]] = []
+    # Session memories already carry vectors
+    try:
+        combined.extend(world_memory.memories)
+    except Exception:
+        pass
+    # Ingest memories: flatten across shards
+    try:
+        for lst in world_memory.ingest_memories.values():
+            if not isinstance(lst, list):
+                continue
+            for m in lst:
+                if not isinstance(m, dict):
+                    continue
+                # Ensure vector present (compute and cache in-memory only)
+                if "vector" not in m:
+                    try:
+                        vec = world_memory.embed_fn(m.get("summary", ""))
+                        m["vector"] = vec
+                    except Exception:
+                        continue
+                combined.append(m)
+    except Exception:
+        pass
+    return combined
+
+
 def weighted_retrieve(
     world_memory: WorldMemory, query: str, k: int = 5
 ) -> List[Dict[str, Any]]:
@@ -25,7 +57,10 @@ def weighted_retrieve(
 
     Returns: top-k memory dicts sorted by weighted score.
     """
-    base = world_memory.retrieve(query, k=max(k * 2, 5))
+    # Retrieve across session + all ingest memories
+    base = _gather_all_memories(world_memory)
+    if not base:
+        return []
     if not base:
         return []
 
@@ -58,7 +93,7 @@ def weighted_retrieve_with_scores(
     Only the top-k by total are returned, filtered by min_total_score if provided.
     Ensures at least one item is returned if any base memories exist.
     """
-    base = world_memory.retrieve(query, k=max(k * 2, 5))
+    base = _gather_all_memories(world_memory)
     if not base:
         return []
 
