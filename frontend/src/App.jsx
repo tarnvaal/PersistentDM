@@ -112,6 +112,8 @@ function App() {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const messagesRef = useRef(null);
+  const activeIngestStreamsRef = useRef(new Map()); // Map of ingestId -> {es: EventSource, timer: interval}
+  const cancelledIngestIdsRef = useRef(new Set());
 
   useEffect(() => {
     const el = messagesRef.current;
@@ -279,6 +281,20 @@ function App() {
   }
 
   async function handleClear() {
+    // Mark all active ingestion IDs as cancelled
+    const activeIds = Array.from(activeIngestStreamsRef.current.keys());
+    activeIds.forEach(id => cancelledIngestIdsRef.current.add(id));
+
+    // Close all active ingestion streams and clear their timers
+    activeIngestStreamsRef.current.forEach(({ es, timer }) => {
+      try {
+        if (timer) clearInterval(timer);
+        es.close();
+      } catch (_) {}
+    });
+
+    activeIngestStreamsRef.current.clear();
+
     try {
       const res = await fetch(`${apiBase}/chat/clear`, {
         method: "POST",
@@ -287,6 +303,7 @@ function App() {
       });
       if (res.ok) {
         setHistory([]);
+        cancelledIngestIdsRef.current.clear();
       }
     } catch (_) {}
   }
@@ -382,56 +399,64 @@ function App() {
                   </div>
                   <div className="mt-2 text-sm bg-[#1e2a30] text-[#c9d1d9] rounded-lg p-3 w-[95%] max-w-[95%]">
                       <div className="text-xs uppercase tracking-wide opacity-70 mb-1">Checkpoints</div>
+                      {(() => {
+                        const info = (item.checkpoints || []).find((c) => c.kind === "info");
+                        const d = info?.data;
+                        if (!d) return null;
+                        return (
+                          <div className="mb-2 text-xs opacity-80">
+                            <div>Tokens≈ {d.approxTokens ?? "?"} • Window {d.windowWords ?? "?"}w • Stride {d.strideWords ?? "?"}w</div>
+                            <div>Steps {d.totalSteps ?? "?"} • Checkpoint every ~{d.checkpointTokenInterval ?? "?"} tokens</div>
+                          </div>
+                        );
+                      })()}
                       <ul className="space-y-1">
-                        {(item.checkpoints || []).map((c, i) => {
-                          const expanded = (item.cpExpanded && item.cpExpanded[i]) || false;
-                          const labelPrefix = c.kind === "saved" ? "Saved" : c.kind === "hygiene" ? "Hygiene" : c.kind === "info" ? "Info" : "Summary";
-                          return (
-                            <li key={`${c.kind || 'cp'}-${i}`} className="text-xs">
-                              <button
-                                type="button"
-                                className="inline-flex items-center gap-2 text-left hover:opacity-90"
-                                onClick={() => setHistory((h) => h.map((m) => (
-                                  m.id === item.id ? { ...m, cpExpanded: { ...(m.cpExpanded || {}), [i]: !expanded } } : m
-                                )))}
-                              >
-                                <span className="inline-flex items-center justify-center w-4 h-4 rounded-[4px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9]">
-                                  {expanded ? "−" : "+"}
-                                </span>
-                                <span className="opacity-80">{labelPrefix}:</span>
-                                <span> {c.summary}</span>
-                              </button>
-                              {expanded && (
-                                <div className="mt-1 ml-6 opacity-80">
-                                  {c.kind === "saved" && (
-                                    <div>
-                                      <div>Type: {c.data?.type}</div>
-                                      {Array.isArray(c.data?.entities) && c.data.entities.length > 0 && (
-                                        <div>Entities: {c.data.entities.join(", ")}</div>
-                                      )}
-                                      {typeof c.data?.confidence === "number" && (
-                                        <div>Confidence: {c.data.confidence}</div>
-                                      )}
-                                    </div>
-                                  )}
-                                  {c.kind === "info" && (
-                                    <div>
-                                      <div>Tokens≈ {c.data?.approxTokens} • Window {c.data?.windowWords}w • Stride {c.data?.strideWords}w</div>
-                                      <div>Steps {c.data?.totalSteps} • Checkpoint every ~{c.data?.checkpointTokenInterval} tokens</div>
-                                    </div>
-                                  )}
-                                  {c.kind === "hygiene" && (
-                                    <div>
-                                      <div>Merged: {c.data?.merged ?? 0}</div>
-                                      <div>Pruned nodes: {c.data?.pruned_nodes ?? 0}</div>
-                                      <div>Pruned edges: {c.data?.pruned_edges ?? 0}</div>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </li>
-                          );
-                        })}
+                        {(item.checkpoints || [])
+                          .map((c, i) => ({ c, i }))
+                          .filter(({ c }) => c.kind !== "info")
+                          .map(({ c, i }) => {
+                            const expanded = (item.cpExpanded && item.cpExpanded[i]) || false;
+                            const labelPrefix = c.kind === "saved" ? "Saved" : c.kind === "hygiene" ? "Hygiene" : "Summary";
+                            return (
+                              <li key={`${c.kind || 'cp'}-${i}`} className="text-xs">
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-2 text-left hover:opacity-90"
+                                  onClick={() => setHistory((h) => h.map((m) => (
+                                    m.id === item.id ? { ...m, cpExpanded: { ...(m.cpExpanded || {}), [i]: !expanded } } : m
+                                  )))}
+                                >
+                                  <span className="inline-flex items-center justify-center w-4 h-4 rounded-[4px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9]">
+                                    {expanded ? "−" : "+"}
+                                  </span>
+                                  <span className="opacity-80">{labelPrefix}:</span>
+                                  <span> {c.summary}</span>
+                                </button>
+                                {expanded && (
+                                  <div className="mt-1 ml-6 opacity-80">
+                                    {c.kind === "saved" && (
+                                      <div>
+                                        <div>Type: {c.data?.type}</div>
+                                        {Array.isArray(c.data?.entities) && c.data.entities.length > 0 && (
+                                          <div>Entities: {c.data.entities.join(", ")}</div>
+                                        )}
+                                        {typeof c.data?.confidence === "number" && (
+                                          <div>Confidence: {c.data.confidence}</div>
+                                        )}
+                                      </div>
+                                    )}
+                                    {c.kind === "hygiene" && (
+                                      <div>
+                                        <div>Merged: {c.data?.merged ?? 0}</div>
+                                        <div>Pruned nodes: {c.data?.pruned_nodes ?? 0}</div>
+                                        <div>Pruned edges: {c.data?.pruned_edges ?? 0}</div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </li>
+                            );
+                          })}
                       </ul>
                       {item.stats && (
                         <div className="mt-2 text-xs opacity-80">
@@ -626,17 +651,32 @@ function App() {
 
                     // Open SSE stream
                     const es = new EventSource(`${apiBase}/ingest/stream?id=${encodeURIComponent(upload.id)}`);
+                    activeIngestStreamsRef.current.set(id, { es, timer: loopTimer });
                     es.addEventListener("info", (ev) => {
                       try {
                         const info = JSON.parse(ev.data || "{}");
                         const summary = `~${info.approxTokens ?? "?"} tokens • window ${info.windowWords ?? "?"}w stride ${info.strideWords ?? "?"}w • steps ${info.totalSteps ?? "?"}`;
                         setHistory((h) => h.map((m) => (
-                          m.id === id ? { ...m, checkpoints: [...(m.checkpoints || []), { kind: "info", summary, data: info }], stats: { ...(m.stats||{}), approxTokens: info.approxTokens } } : m
+                          m.id === id
+                            ? {
+                                ...m,
+                                checkpoints: [...(m.checkpoints || []), { kind: "info", summary, data: info }],
+                                stats: { ...(m.stats || {}), approxTokens: info.approxTokens },
+                                meta: { step: 0, totalSteps: info.totalSteps, consumedWords: 0, consumedLines: 0 },
+                              }
+                            : m
                         )));
                       } catch (_) {}
                     });
 
-                    const closeES = () => { try { es.close(); } catch (_) {} };
+                    const closeES = () => {
+                      const entry = activeIngestStreamsRef.current.get(id);
+                      if (entry) {
+                        if (entry.timer) clearInterval(entry.timer);
+                        try { entry.es.close(); } catch (_) {}
+                        activeIngestStreamsRef.current.delete(id);
+                      }
+                    };
 
                     es.addEventListener("progress", (ev) => {
                       try {
@@ -722,7 +762,13 @@ function App() {
 
                     es.addEventListener("error", () => {
                       clearInterval(loopTimer);
-                      setHistory((h) => h.map((m) => (m.id === id ? { ...m, content: `[Error] Ingest stream failed`, ready: true } : m)));
+                      const wasCancelled = cancelledIngestIdsRef.current.has(id);
+                      setHistory((h) => h.map((m) => (m.id === id ? {
+                        ...m,
+                        content: wasCancelled ? `[Cancelled] Ingestion stopped` : `[Error] Ingest stream failed`,
+                        ready: true
+                      } : m)));
+                      cancelledIngestIdsRef.current.delete(id);
                       closeES();
                     });
                   }}

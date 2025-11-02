@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -46,7 +46,11 @@ def _sse(event: str, payload: dict) -> str:
 
 
 @router.get("/stream")
-def stream(id: str = Query(...), conversation=Depends(get_conversation_service)):
+def stream(
+    request: Request,
+    id: str = Query(...),
+    conversation=Depends(get_conversation_service),
+):
     text = _uploads.pop(id, None)
     if text is None:
         raise HTTPException(status_code=404, detail={"error": "not found"})
@@ -227,139 +231,165 @@ def stream(id: str = Query(...), conversation=Depends(get_conversation_service))
         }
 
     def generate():
-        # Initial info for UI panel
-        yield _sse(
-            "info",
-            {
-                "words": total_words,
-                "lines": total_lines,
-                "approxTokens": approx_tokens,
-                "windowTokens": window_tokens,
-                "strideTokens": stride_tokens,
-                "windowWords": window_words,
-                "strideWords": stride_words,
-                "totalSteps": total_steps,
-                "checkpointTokenInterval": checkpoint_tokens,
-                "checkpointStepInterval": checkpoint_step_interval,
-            },
-        )
-        consumed_words = 0
-        for step in range(total_steps):
-            start_idx = step * stride_words
-            end_idx = min(total_words, start_idx + window_words)
-            chunk_words = words[start_idx:end_idx]
-            chunk_text = " ".join(chunk_words)
-
-            # Emit memory (conservative)
+        try:
+            # Initial info for UI panel
             try:
-                # Prefer multi-extractor
-                multi = getattr(chatter, "extract_memories_from_text", None)
-                single = getattr(chatter, "extract_memory_from_text", None)
-                extracted = []
-                if callable(multi):
-                    items = multi(chunk_text, max_items=5) or []
-                    if isinstance(items, list):
-                        extracted = [m for m in items if isinstance(m, dict)]
-                if not extracted and callable(single):
-                    m = single(chunk_text)
-                    if isinstance(m, dict):
-                        extracted = [m]
+                yield _sse(
+                    "info",
+                    {
+                        "words": total_words,
+                        "lines": total_lines,
+                        "approxTokens": approx_tokens,
+                        "windowTokens": window_tokens,
+                        "strideTokens": stride_tokens,
+                        "windowWords": window_words,
+                        "strideWords": stride_words,
+                        "totalSteps": total_steps,
+                        "checkpointTokenInterval": checkpoint_tokens,
+                        "checkpointStepInterval": checkpoint_step_interval,
+                    },
+                )
+            except GeneratorExit:
+                return
+            consumed_words = 0
+            for step in range(total_steps):
+                # Check for client disconnection by attempting a small probe yield
+                # If client disconnected, GeneratorExit will be raised and caught by outer handler
+                start_idx = step * stride_words
+                end_idx = min(total_words, start_idx + window_words)
+                chunk_words = words[start_idx:end_idx]
+                chunk_text = " ".join(chunk_words)
 
-                for mem in extracted:
-                    try:
-                        conf = float(mem.get("confidence", 0.0))
-                    except Exception:
-                        conf = 0.0
-                    if conf < 0.7:
-                        continue
-                    entities = sanitize_entities(mem.get("entities"))
-                    npc_payload = mem.get("npc")
-                    try:
-                        world_memory.add_memory(
-                            mem.get("summary", ""),
-                            entities,
-                            mem.get("type", "other"),
-                            npc=npc_payload,
-                        )
-                        # If this appears to be a location, upsert a node for hygiene to work
-                        if str(mem.get("type", "")).lower() == "location":
-                            loc_name = None
-                            if entities:
-                                loc_name = str(entities[0]).strip()
-                            if not loc_name:
-                                # crude fallback: take first phrase from summary
-                                loc_name = (
-                                    mem.get("summary", "").split(" is ", 1)[0] or ""
-                                ).strip() or None
-                            if (
-                                loc_name
-                                and loc_name
-                                not in world_memory.location_graph.locations
-                            ):
-                                world_memory.location_graph.add_location(
-                                    LocationNode(loc_name, mem.get("summary", ""))
+                # Emit memory (conservative)
+                try:
+                    # Prefer multi-extractor
+                    multi = getattr(chatter, "extract_memories_from_text", None)
+                    single = getattr(chatter, "extract_memory_from_text", None)
+                    extracted = []
+                    if callable(multi):
+                        items = multi(chunk_text, max_items=5) or []
+                        if isinstance(items, list):
+                            extracted = [m for m in items if isinstance(m, dict)]
+                    if not extracted and callable(single):
+                        m = single(chunk_text)
+                        if isinstance(m, dict):
+                            extracted = [m]
+
+                    for mem in extracted:
+                        try:
+                            conf = float(mem.get("confidence", 0.0))
+                        except Exception:
+                            conf = 0.0
+                        if conf < 0.7:
+                            continue
+                        entities = sanitize_entities(mem.get("entities"))
+                        npc_payload = mem.get("npc")
+                        try:
+                            world_memory.add_memory(
+                                mem.get("summary", ""),
+                                entities,
+                                mem.get("type", "other"),
+                                npc=npc_payload,
+                            )
+                            # If this appears to be a location, upsert a node for hygiene to work
+                            if str(mem.get("type", "")).lower() == "location":
+                                loc_name = None
+                                if entities:
+                                    loc_name = str(entities[0]).strip()
+                                if not loc_name:
+                                    # crude fallback: take first phrase from summary
+                                    loc_name = (
+                                        mem.get("summary", "").split(" is ", 1)[0] or ""
+                                    ).strip() or None
+                                if (
+                                    loc_name
+                                    and loc_name
+                                    not in world_memory.location_graph.locations
+                                ):
+                                    world_memory.location_graph.add_location(
+                                        LocationNode(loc_name, mem.get("summary", ""))
+                                    )
+
+                            try:
+                                yield _sse(
+                                    "saved",
+                                    {
+                                        "summary": mem.get("summary", ""),
+                                        "type": mem.get("type", "other"),
+                                        "entities": entities,
+                                        "npc": npc_payload
+                                        if isinstance(npc_payload, dict)
+                                        else None,
+                                        "confidence": conf,
+                                    },
                                 )
+                            except GeneratorExit:
+                                return
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
-                        yield _sse(
-                            "saved",
-                            {
-                                "summary": mem.get("summary", ""),
-                                "type": mem.get("type", "other"),
-                                "entities": entities,
-                                "npc": npc_payload
-                                if isinstance(npc_payload, dict)
-                                else None,
-                                "confidence": conf,
-                            },
-                        )
+                # Every checkpointStepInterval steps provide a small checkpoint summary (not persisted)
+                if (step + 1) % checkpoint_step_interval == 0:
+                    try:
+                        summarizer = getattr(chatter, "summarize_snippet", None)
+                        if callable(summarizer):
+                            cp = summarizer(chunk_text)
+                            if isinstance(cp, dict) and cp.get("summary"):
+                                try:
+                                    yield _sse(
+                                        "checkpoint",
+                                        {"step": step, "summary": cp.get("summary")},
+                                    )
+                                except GeneratorExit:
+                                    return
                     except Exception:
                         pass
-            except Exception:
-                pass
 
-            # Every checkpointStepInterval steps provide a small checkpoint summary (not persisted)
-            if (step + 1) % checkpoint_step_interval == 0:
+                    # Graph hygiene: merge duplicates and prune isolated nodes/edges
+                    try:
+                        stats = _graph_hygiene(world_memory)
+                        try:
+                            yield _sse("hygiene", stats)
+                        except GeneratorExit:
+                            return
+                    except Exception:
+                        pass
+
+                # Progress update
+                consumed_words = min(total_words, (step + 1) * stride_words)
+                ratio = (
+                    0.0 if total_words == 0 else min(1.0, consumed_words / total_words)
+                )
+                approx_lines = int(total_lines * ratio)
                 try:
-                    summarizer = getattr(chatter, "summarize_snippet", None)
-                    if callable(summarizer):
-                        cp = summarizer(chunk_text)
-                        if isinstance(cp, dict) and cp.get("summary"):
-                            yield _sse(
-                                "checkpoint",
-                                {"step": step, "summary": cp.get("summary")},
-                            )
-                except Exception:
-                    pass
+                    yield _sse(
+                        "progress",
+                        {
+                            "step": step,
+                            "totalSteps": total_steps,
+                            "consumedWords": consumed_words,
+                            "consumedLines": approx_lines,
+                            "progress": ratio,
+                        },
+                    )
+                except GeneratorExit:
+                    return
 
-                # Graph hygiene: merge duplicates and prune isolated nodes/edges
-                try:
-                    stats = _graph_hygiene(world_memory)
-                    yield _sse("hygiene", stats)
-                except Exception:
-                    pass
-
-            # Progress update
-            consumed_words = min(total_words, (step + 1) * stride_words)
-            ratio = 0.0 if total_words == 0 else min(1.0, consumed_words / total_words)
-            approx_lines = int(total_lines * ratio)
-            yield _sse(
-                "progress",
-                {
-                    "step": step,
-                    "totalSteps": total_steps,
-                    "consumedWords": consumed_words,
-                    "consumedLines": approx_lines,
-                    "progress": ratio,
-                },
-            )
-
-        yield _sse(
-            "done",
-            {
-                "words": total_words,
-                "lines": total_lines,
-                "steps": total_steps,
-            },
-        )
+            try:
+                yield _sse(
+                    "done",
+                    {
+                        "words": total_words,
+                        "lines": total_lines,
+                        "steps": total_steps,
+                    },
+                )
+            except GeneratorExit:
+                return
+        except GeneratorExit:
+            # Client disconnected - exit cleanly
+            return
 
     return StreamingResponse(generate(), media_type="text/event-stream")

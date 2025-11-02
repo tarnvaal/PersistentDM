@@ -32,10 +32,12 @@ class ClearResponse(BaseModel):
 def clear_chat(req: ClearRequest):
     if req.clear:
         reset_chatter()
-        # Also clear world memory and NPC index so the game state resets
+        # Also clear world memory, NPC index, and location graph so the game state resets
         wm = get_world_memory()
         wm.memories.clear()
         wm.npc_index.clear()
+        wm.location_graph.locations.clear()
+        wm.location_graph.player_location = None
         return ClearResponse(success=True)
     else:
         return ClearResponse(success=False)
