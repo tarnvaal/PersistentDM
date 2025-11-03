@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef, useEffect } from "react";
+import SessionsModal from "./components/SessionsModal.jsx";
 
 // Approximate token estimator and sliding-window ingestor
 class TextIngestor {
@@ -111,6 +112,7 @@ function App() {
   const [expanded, setExpanded] = useState({});
   const [pasteOpen, setPasteOpen] = useState(false);
   const [savedOpen, setSavedOpen] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
   const [savedIngests, setSavedIngests] = useState([]);
   const [pasteText, setPasteText] = useState("");
   const messagesRef = useRef(null);
@@ -396,6 +398,21 @@ function App() {
               {/* Folder icon */}
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+              </svg>
+            </button>
+            <button
+              id="btn-sessions"
+              type="button"
+              className="inline-flex items-center justify-center w-9 h-9 rounded-[10px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] transition-colors ease-linear hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600] active:translate-y-px"
+              aria-label="Manage sessions"
+              onClick={() => setSessionsOpen(true)}
+              title="Manage sessions"
+            >
+              {/* Layers icon */}
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                <polyline points="2 17 12 22 22 17" />
+                <polyline points="2 12 12 17 22 12" />
               </svg>
             </button>
           </div>
@@ -1112,6 +1129,46 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+      {sessionsOpen && (
+        <SessionsModal
+          apiBase={apiBase}
+          open={sessionsOpen}
+          onClose={() => setSessionsOpen(false)}
+          onLoaded={({ name, info }) => {
+            try {
+              const locs = typeof info?.locations === "number" ? info.locations : undefined;
+              const mems = typeof info?.worldMemories === "number" ? info.worldMemories : undefined;
+              const chats = typeof info?.chatMessages === "number" ? info.chatMessages : undefined;
+              const parts = [
+                `Session loaded: ${name}`,
+                locs != null ? `${locs} locations` : null,
+                mems != null ? `${mems} memories` : null,
+                chats != null ? `${chats} chat msgs` : null,
+              ].filter(Boolean);
+              const msgId = `session-loaded-${Date.now()}`;
+              setHistory((h) => [
+                ...h,
+                {
+                  role: "assistant",
+                  id: msgId,
+                  type: "ingest",
+                  content: parts.join(" — "),
+                  ready: true,
+                  progress: 1,
+                  loop: 0,
+                  stats: { steps: 1 },
+                  checkpoints: [
+                    { kind: "checkpoint", step: 1, summary: `Session loaded: ${name}`, data: info || {} },
+                    { kind: "info", summary: `locations ${locs ?? "?"} • memories ${mems ?? "?"} • chat ${chats ?? "?"}`, data: { totalSteps: 1 } },
+                  ],
+                  detailsOpen: false,
+                  showDetails: false,
+                },
+              ]);
+            } catch (_) {}
+          }}
+        />
       )}
     </main>
   );

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routers.chat import router as chat_router
 from .routers.ingest import router as ingest_router
+from .sessions.router import router as sessions_router
 from .dependencies import get_chatter
 from .utility.embeddings import EmbeddingModelSingleton
 from .utility.llama import Chatter
@@ -83,3 +84,4 @@ def status():
 
 app.include_router(chat_router)
 app.include_router(ingest_router)
+app.include_router(sessions_router)
