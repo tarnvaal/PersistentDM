@@ -488,8 +488,8 @@ function App() {
                         if (!d) return null;
                         return (
                           <div className="mb-2 text-xs opacity-80">
-                            <div>Tokens≈ {d.approxTokens ?? "?"} • Window {d.windowWords ?? "?"}w • Stride {d.strideWords ?? "?"}w</div>
-                            <div>Steps {d.totalSteps ?? "?"} • Checkpoint every ~{d.checkpointTokenInterval ?? "?"} tokens</div>
+                            <div>Tokens≈ {d.approxTokens ?? "?"} • Window {d.windowWords ?? "?"}w</div>
+                            <div>Steps {d.totalSteps ?? "?"} • Stride {d.strideWords ?? "?"}w</div>
                           </div>
                         );
                       })()}

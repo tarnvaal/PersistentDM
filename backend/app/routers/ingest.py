@@ -4,6 +4,7 @@ import json
 import uuid
 import os
 import time
+import re
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -14,6 +15,7 @@ from ..dependencies import get_conversation_service
 from ..world.memory_utils import sanitize_entities
 from ..world.memory import LocationNode
 from ..world.context_builder import summarize_memory_context
+from ..utility.embeddings import dot_sim
 
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -346,6 +348,142 @@ def stream(
             except GeneratorExit:
                 return
             consumed_words = 0
+            # Rolling ingest context carried across windows
+            ingest_ctx = {"npcs": []}
+
+            def _make_header(ctx: dict) -> str:
+                parts = []
+                protagonist = ctx.get("protagonist")
+                if isinstance(protagonist, str) and protagonist.strip():
+                    parts.append(f"- Protagonist: {protagonist.strip()}")
+                goal = ctx.get("goal")
+                if isinstance(goal, str) and goal.strip():
+                    parts.append(f"- Goal: {goal.strip()}")
+                area = ctx.get("current_area")
+                if isinstance(area, str) and area.strip():
+                    parts.append(f"- Current Area: {area.strip()}")
+                npcs = ctx.get("npcs") or []
+                if isinstance(npcs, list) and npcs:
+                    parts.append(
+                        f"- NPCs Mentioned: {', '.join([str(n) for n in npcs[:5]])}"
+                    )
+                header = "Context so far:\n" + ("\n".join(parts) if parts else "- None")
+                # Cap to ~300 chars to avoid prompt bloat
+                return header[:300]
+
+            def _update_ctx_from_mem(ctx: dict, mem: dict) -> None:
+                try:
+                    conf = float(mem.get("confidence", 0.0))
+                except Exception:
+                    conf = 0.0
+                # Use slightly stricter threshold for context updates
+                if conf < 0.75:
+                    return
+                mtype = str(mem.get("type", "")).lower()
+                entities_local = sanitize_entities(mem.get("entities"))
+                if mtype == "location" and entities_local:
+                    ctx["current_area"] = entities_local[0]
+                if mtype == "goal":
+                    summary = mem.get("summary")
+                    if isinstance(summary, str) and summary.strip():
+                        ctx["goal"] = summary.strip()[:200]
+                npc_payload_local = mem.get("npc")
+                if isinstance(npc_payload_local, dict):
+                    name = str(npc_payload_local.get("name", "")).strip()
+                    if name:
+                        npcs_list = ctx.get("npcs") or []
+                        try:
+                            if name in npcs_list:
+                                npcs_list.remove(name)
+                        except Exception:
+                            pass
+                        npcs_list.insert(0, name)
+                        ctx["npcs"] = npcs_list[:5]
+
+            def _select_relevant_snippet(
+                text_block: str, summary: str, max_chars: int = 300
+            ) -> str:
+                """Pick a contiguous, in-order snippet from text_block most relevant to summary.
+
+                Uses sentence-level embeddings with sliding windows of 1-3 sentences,
+                chooses the highest dot_sim to the summary embedding while staying under max_chars.
+                Falls back to leading slice on failure.
+                """
+                try:
+                    text = (text_block or "").strip()
+                    if not text:
+                        return ""
+                    summ = (summary or "").strip()
+                    # If no usable summary, fallback to naive slice
+                    if not summ or len(summ) < 8:
+                        return text[: max_chars - 1] + (
+                            "…" if len(text) > max_chars else ""
+                        )
+
+                    # Split into sentences, retaining punctuation
+                    sentences = re.split(r"(?<=[.!?])\s+", text)
+                    sentences = [s for s in sentences if s and s.strip()]
+                    if not sentences:
+                        return text[: max_chars - 1] + (
+                            "…" if len(text) > max_chars else ""
+                        )
+
+                    embed = world_memory.embed_fn
+                    sum_vec = embed(summ)
+                    sent_vecs = []
+                    for s in sentences:
+                        try:
+                            sent_vecs.append((s, embed(s)))
+                        except Exception:
+                            sent_vecs.append((s, None))
+
+                    def _avg_vec(vecs):
+                        valid = [v for v in vecs if v is not None]
+                        if not valid:
+                            return None
+                        n = len(valid)
+                        acc = [0.0] * len(valid[0])
+                        for v in valid:
+                            for i, x in enumerate(v):
+                                acc[i] += x
+                        return [x / n for x in acc]
+
+                    best = (float("-inf"), "")
+                    max_window = 3
+                    for i in range(len(sentences)):
+                        for w in range(1, max_window + 1):
+                            j = i + w
+                            if j > len(sentences):
+                                break
+                            span_sents = sentences[i:j]
+                            candidate = " ".join(span_sents)
+                            if not candidate:
+                                continue
+                            if len(candidate) > max_chars:
+                                # early break if even the first window is too long
+                                if w == 1:
+                                    candidate = candidate[: max_chars - 1] + "…"
+                                else:
+                                    break
+                            vecs = [vec for (_, vec) in sent_vecs[i:j]]
+                            span_vec = _avg_vec(vecs)
+                            score = (
+                                dot_sim(span_vec, sum_vec)
+                                if span_vec is not None
+                                else 0.0
+                            )
+                            if score > best[0]:
+                                best = (score, candidate)
+
+                    chosen = best[1] or text[: max_chars - 1]
+                    if len(chosen) > max_chars:
+                        chosen = chosen[: max_chars - 1] + "…"
+                    return chosen
+                except Exception:
+                    # Robust fallback
+                    t = (text_block or "").strip()
+                    return t[: max_chars - 1] + ("…" if len(t) > max_chars else "")
+
             for step in range(total_steps):
                 # Check for client disconnection by attempting a small probe yield
                 # If client disconnected, GeneratorExit will be raised and caught by outer handler
@@ -353,6 +491,8 @@ def stream(
                 end_idx = min(total_words, start_idx + window_words)
                 chunk_words = words[start_idx:end_idx]
                 chunk_text = " ".join(chunk_words)
+                header_text = _make_header(ingest_ctx)
+                chunk_for_model = f"{header_text}\n\nAnalyze this excerpt for new durable facts:\n{chunk_text}"
 
                 # Emit memory (conservative)
                 try:
@@ -361,11 +501,11 @@ def stream(
                     single = getattr(chatter, "extract_memory_from_text", None)
                     extracted = []
                     if callable(multi):
-                        items = multi(chunk_text, max_items=5) or []
+                        items = multi(chunk_for_model, max_items=5) or []
                         if isinstance(items, list):
                             extracted = [m for m in items if isinstance(m, dict)]
                     if not extracted and callable(single):
-                        m = single(chunk_text)
+                        m = single(chunk_for_model)
                         if isinstance(m, dict):
                             extracted = [m]
 
@@ -381,9 +521,10 @@ def stream(
                         try:
                             # Provide a brief provenance for explanations
                             # Use a short snippet of the current chunk as source context
-                            snippet = (chunk_text or "").strip()
-                            if len(snippet) > 300:
-                                snippet = snippet[:299] + "…"
+                            mem_summary = mem.get("summary", "")
+                            snippet = _select_relevant_snippet(
+                                chunk_text, mem_summary, 300
+                            )
                             source_context = f"Ingested: {snippet}" if snippet else None
 
                             # Store in ingest layer for this shard (no session mutation)
@@ -476,6 +617,11 @@ def stream(
                                         "explanation": explanation,
                                     },
                                 )
+                                # Update rolling context after successful save event
+                                try:
+                                    _update_ctx_from_mem(ingest_ctx, mem)
+                                except Exception:
+                                    pass
                             except GeneratorExit:
                                 return
                         except Exception:
@@ -508,6 +654,37 @@ def stream(
                     return
 
             try:
+                # Consolidate duplicates before persisting
+                try:
+                    shard_list = world_memory.ingest_memories.get(ingest_id, [])
+                    if isinstance(shard_list, list) and len(shard_list) >= 6:
+                        seen: Dict[str, dict] = {}
+                        for m in shard_list:
+                            if not isinstance(m, dict):
+                                continue
+                            summary_key = " ".join(
+                                str(m.get("summary", "")).strip().lower().split()
+                            )
+                            ents_norm = sanitize_entities(m.get("entities"))
+                            ents_key = "|".join(sorted([e.lower() for e in ents_norm]))
+                            key = f"{summary_key}##{ents_key}"
+                            prev = seen.get(key)
+                            try:
+                                cur_conf = float(m.get("confidence", 0.0))
+                            except Exception:
+                                cur_conf = 0.0
+                            prev_conf = 0.0
+                            if isinstance(prev, dict):
+                                try:
+                                    prev_conf = float(prev.get("confidence", 0.0))
+                                except Exception:
+                                    prev_conf = 0.0
+                            if prev is None or cur_conf >= prev_conf:
+                                seen[key] = m
+                        world_memory.ingest_memories[ingest_id] = list(seen.values())
+                except Exception:
+                    pass
+
                 # Persist shard before signaling done so it survives restarts
                 try:
                     base_dir = _ingests_dir()

@@ -589,7 +589,25 @@ class Chatter:
             "You analyze narrative/game text to extract IMPORTANT persistent facts.\n"
             "Return ONLY a JSON array (max {max_items}) of objects with keys: summary, entities, type, confidence, optional npc.\n"
             "Types: npc|location|item|goal|threat|world_state|other.\n"
-            "If nothing durable, return []."
+            "Preserve named entities (use full proper names when available). Prefer specific, grounded facts.\n"
+            "If nothing durable, return [].\n\n"
+            "Example Input:\n"
+            "Context so far:\n"
+            "- The narrator is Jonathan Harker, an English solicitor.\n"
+            "- He is traveling to meet Count Dracula in Transylvania.\n"
+            "Analyze this excerpt:\n"
+            '"I left Munich at 8:35PM and reached Vienna the next morning. Buda-Pesth seems a wonderful place. I am on my way to meet the Count."\n\n'
+            "Example Output:\n"
+            "[\n"
+            "  {\n"
+            '    "summary": "Jonathan Harker is traveling from Western Europe to meet Count Dracula in Transylvania on legal business",\n'
+            '    "entities": ["Jonathan Harker", "Count Dracula", "Transylvania"],\n'
+            '    "type": "goal",\n'
+            '    "confidence": 0.92,\n'
+            '    "npc": null\n'
+            "  }\n"
+            "]\n\n"
+            "Now do the same for this excerpt:"
         ).replace("{max_items}", str(max_items))
         user = text[:4000]
         parsed_result, err = self._complete_json(
