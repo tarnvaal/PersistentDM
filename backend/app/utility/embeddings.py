@@ -1,5 +1,6 @@
 import math
 from typing import List
+import threading
 
 import torch
 from sentence_transformers import SentenceTransformer
@@ -46,9 +47,38 @@ def dot_sim(a: List[float], b: List[float]) -> float:
     return total
 
 
+class EmbeddingModelSingleton:
+    _instance: EmbeddingModel | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def initialize(cls, device: str | None = None) -> EmbeddingModel:
+        """Create the singleton if missing; subsequent calls return the same instance.
+
+        This is intentionally non-lazy from the caller's perspective: callers should
+        invoke initialize() during application startup. get() will raise if called
+        before initialize(), to avoid accidental green-lights when the model isn't ready.
+        """
+        if cls._instance is not None:
+            return cls._instance
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = EmbeddingModel(device=device)
+        return cls._instance
+
+    @classmethod
+    def get(cls) -> EmbeddingModel:
+        if cls._instance is None:
+            raise RuntimeError(
+                "Embedding model not initialized. Call EmbeddingModelSingleton.initialize() at startup."
+            )
+        return cls._instance
+
+
 def get_embedding_model(device: str | None = None) -> EmbeddingModel:
-    """Convenience function to get an initialized embedding model."""
-    return EmbeddingModel(device=device)
+    """Return the already-initialized singleton. Raises if not initialized."""
+    # device parameter is ignored by design to enforce a single consistent instance
+    return EmbeddingModelSingleton.get()
 
 
 if __name__ == "__main__":

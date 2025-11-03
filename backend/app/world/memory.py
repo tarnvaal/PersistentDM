@@ -20,6 +20,7 @@ class WorldMemory:
         self.ingest_subgraphs: Dict[str, Dict[str, "LocationNode"]] = {}
         self.ingest_memories: Dict[str, List[Dict[str, Any]]] = {}
         self.ingest_names: Dict[str, str] = {}
+        self.ingest_npc_index: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
     # ---------------- Ingest Layer helpers ----------------
     def ensure_ingest_shard(self, ingest_id: str) -> None:
@@ -27,6 +28,8 @@ class WorldMemory:
             self.ingest_subgraphs[ingest_id] = {}
         if ingest_id not in self.ingest_memories:
             self.ingest_memories[ingest_id] = []
+        if ingest_id not in self.ingest_npc_index:
+            self.ingest_npc_index[ingest_id] = {}
 
     def add_ingest_memory(self, ingest_id: str, memory_dict: Dict[str, Any]) -> None:
         self.ensure_ingest_shard(ingest_id)
@@ -51,11 +54,23 @@ class WorldMemory:
             base = base_dir or os.getenv("INGESTS_DIR", "./data/ingests")
             os.makedirs(base, exist_ok=True)
             subgraph = self.ingest_subgraphs.get(ingest_id, {})
-            memories = self.ingest_memories.get(ingest_id, [])
+            # Strip vectors before persisting; embeddings are recomputed on load
+            raw_memories = self.ingest_memories.get(ingest_id, [])
+            memories = []
+            for m in raw_memories:
+                if isinstance(m, dict):
+                    try:
+                        cleaned = {k: v for k, v in m.items() if k != "vector"}
+                        memories.append(cleaned)
+                    except Exception:
+                        memories.append(m)
+                else:
+                    memories.append(m)
             payload = {
                 "name": self.ingest_names.get(ingest_id),
                 "subgraph": {name: node.to_dict() for name, node in subgraph.items()},
                 "memories": memories,
+                "npc_index": self.ingest_npc_index.get(ingest_id, {}),
             }
             path = os.path.join(base, f"{ingest_id}.json")
             with open(path, "w", encoding="utf-8") as f:
@@ -77,6 +92,7 @@ class WorldMemory:
                     subgraph_raw = data.get("subgraph", {}) or {}
                     memories_raw = data.get("memories", []) or []
                     name_raw = data.get("name")
+                    npc_index_raw = data.get("npc_index", {}) or {}
                     shard_graph: Dict[str, LocationNode] = {}
                     for name, nd in subgraph_raw.items():
                         try:
@@ -87,11 +103,106 @@ class WorldMemory:
                     self.ingest_memories[ingest_id] = [
                         m for m in memories_raw if isinstance(m, dict)
                     ]
+                    # Load per-shard NPC index
+                    try:
+                        idx: Dict[str, Dict[str, Any]] = {}
+                        if isinstance(npc_index_raw, dict):
+                            for k, v in npc_index_raw.items():
+                                if isinstance(k, str) and isinstance(v, dict):
+                                    idx[k] = v
+                        self.ingest_npc_index[ingest_id] = idx
+                    except Exception:
+                        self.ingest_npc_index[ingest_id] = {}
+                    # Recompute embeddings for all memories upon load (do not trust persisted vectors)
+                    try:
+                        embed = self.embed_fn
+                        for m in self.ingest_memories.get(ingest_id, []):
+                            try:
+                                if isinstance(m, dict):
+                                    summary = m.get("summary", "")
+                                    if isinstance(summary, str):
+                                        m["vector"] = embed(summary)
+                                        # Align recency with vector compute time on load
+                                        m["timestamp"] = time.time()
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
                     if isinstance(name_raw, str) and name_raw.strip():
                         self.ingest_names[ingest_id] = name_raw.strip()[:120]
                 except Exception:
                     # keep loading others
                     continue
+        except Exception:
+            return
+
+    # ---------------- Ingest NPC index helpers ----------------
+    def add_ingest_npc_update(
+        self, ingest_id: str, npc: Dict[str, Any], source_entry: Dict[str, Any]
+    ) -> None:
+        """Upsert an NPC snapshot in the per-shard npc index for persistence during ingest."""
+        try:
+            self.ensure_ingest_shard(ingest_id)
+            name = str(npc.get("name", "")).strip()
+            if not name:
+                return
+            cid = self._canonicalize_name(name)
+            now = time.time()
+            idx = self.ingest_npc_index.get(ingest_id, {})
+            snapshot = idx.get(
+                cid,
+                {
+                    "name": name,
+                    "aliases": [],
+                    "last_seen_location": None,
+                    "last_seen_time": 0.0,
+                    "intent": None,
+                    "relationship_to_player": "unknown",
+                    "history": [],
+                    "confidence": 0.0,
+                },
+            )
+            aliases = npc.get("aliases", []) or []
+            if isinstance(aliases, list):
+                existing = {
+                    self._canonicalize_name(a): a for a in snapshot.get("aliases", [])
+                }
+                for a in aliases:
+                    if isinstance(a, str):
+                        key = self._canonicalize_name(a)
+                        if key not in existing and key != cid:
+                            snapshot["aliases"].append(a)
+            loc = npc.get("last_seen_location")
+            if isinstance(loc, str) and loc.strip():
+                snapshot["last_seen_location"] = loc.strip()
+                snapshot["last_seen_time"] = now
+            intent = npc.get("intent")
+            if isinstance(intent, str) and intent.strip():
+                snapshot["intent"] = intent.strip()
+            rel = str(npc.get("relationship_to_player", "")).lower().strip()
+            order = {"hostile": 3, "friendly": 2, "neutral": 1, "unknown": 0}
+            if rel in order:
+                current = str(snapshot.get("relationship_to_player", "unknown")).lower()
+                if order.get(rel, 0) >= order.get(current, 0):
+                    snapshot["relationship_to_player"] = rel
+            conf = npc.get("confidence")
+            try:
+                cval = float(conf) if conf is not None else 0.0
+            except Exception:
+                cval = 0.0
+            try:
+                prev = snapshot.get("confidence", 0.0)
+                prev_f = float(prev) if prev is not None else 0.0
+                snapshot["confidence"] = max(prev_f, cval)
+            except Exception:
+                snapshot["confidence"] = cval
+            history_line = source_entry.get("summary")
+            if isinstance(history_line, str) and history_line:
+                hist = snapshot.get("history", [])
+                hist.append(history_line[:160])
+                snapshot["history"] = hist[-10:]
+            idx[cid] = snapshot
+            self.ingest_npc_index[ingest_id] = idx
         except Exception:
             return
 
@@ -194,6 +305,17 @@ class WorldMemory:
         if isinstance(loc, str) and loc.strip():
             snapshot["last_seen_location"] = loc.strip()
             snapshot["last_seen_time"] = now
+            # Opportunistically reflect presence in live location graph for fast UI
+            try:
+                loc_name = loc.strip()
+                node = self.location_graph.locations.get(loc_name)
+                if node is not None:
+                    cname = cid  # canonicalized NPC name
+                    if cname not in node.npcs_present:
+                        node.npcs_present.append(cname)
+            except Exception:
+                # Never let graph hygiene break memory upserts
+                pass
 
         # update intent (replace if provided and non-empty)
         intent = npc.get("intent")
@@ -238,13 +360,28 @@ class WorldMemory:
             return []
         qvec = self.embed_fn(query)
 
+        # Combine session NPCs with ingest NPCs (session entries take precedence)
+        combined: Dict[str, Dict[str, Any]] = {}
+        for key, v in self.npc_index.items():
+            combined[key] = v
+        for idx in self.ingest_npc_index.values():
+            for key, v in idx.items():
+                if key not in combined:
+                    combined[key] = v
+
         scored: List[Tuple[float, Dict[str, Any]]] = []
-        for snap in self.npc_index.values():
+        for snap in combined.values():
             # build a small text rep for similarity: name + aliases + intent + location
             parts = [snap.get("name", "")]
             parts.extend(snap.get("aliases", []) or [])
             parts.append(snap.get("intent", "") or "")
-            parts.append(snap.get("last_seen_location", "") or "")
+            # include both raw and canonicalized last_seen_location for better recall
+            raw_loc = snap.get("last_seen_location", "") or ""
+            if raw_loc:
+                parts.append(raw_loc)
+                canon_loc = " ".join(str(raw_loc).strip().lower().split())
+                if canon_loc and canon_loc != raw_loc:
+                    parts.append(canon_loc)
             text = " | ".join([p for p in parts if p])
             svec = self.embed_fn(text) if text else qvec
             score = dot_sim(qvec, svec)
@@ -268,12 +405,26 @@ class WorldMemory:
             return []
         qvec = self.embed_fn(query)
 
+        # Combine session NPCs with ingest NPCs (session entries take precedence)
+        combined: Dict[str, Dict[str, Any]] = {}
+        for key, v in self.npc_index.items():
+            combined[key] = v
+        for idx in self.ingest_npc_index.values():
+            for key, v in idx.items():
+                if key not in combined:
+                    combined[key] = v
+
         scored: List[Tuple[float, Dict[str, Any]]] = []
-        for snap in self.npc_index.values():
+        for snap in combined.values():
             parts = [snap.get("name", "")]
             parts.extend(snap.get("aliases", []) or [])
             parts.append(snap.get("intent", "") or "")
-            parts.append(snap.get("last_seen_location", "") or "")
+            raw_loc = snap.get("last_seen_location", "") or ""
+            if raw_loc:
+                parts.append(raw_loc)
+                canon_loc = " ".join(str(raw_loc).strip().lower().split())
+                if canon_loc and canon_loc != raw_loc:
+                    parts.append(canon_loc)
             text = " | ".join([p for p in parts if p])
             svec = self.embed_fn(text) if text else qvec
             score = dot_sim(qvec, svec)
@@ -333,6 +484,7 @@ class LocationNode:
     def __init__(self, name: str, description: str = ""):
         self.name = name
         self.description = description
+        self.aliases: List[str] = []
         self.connections: List[LocationEdge] = []
         self.npcs_present: List[str] = []
 
@@ -340,7 +492,7 @@ class LocationNode:
         return {
             "name": self.name,
             "description": self.description,
-            "aliases": [],  # aliases not modeled here; placeholder for forward-compat
+            "aliases": list(self.aliases),
             "connections": [e.to_dict() for e in self.connections],
             "npcs_present": list(self.npcs_present),
         }
@@ -360,6 +512,9 @@ class LocationNode:
         npcs = d.get("npcs_present", []) or []
         if isinstance(npcs, list):
             node.npcs_present = [str(x) for x in npcs if isinstance(x, str)]
+        aliases_raw = d.get("aliases", []) or []
+        if isinstance(aliases_raw, list):
+            node.aliases = [str(x) for x in aliases_raw if isinstance(x, str)]
         return node
 
 

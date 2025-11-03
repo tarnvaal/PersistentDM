@@ -8,12 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routers.chat import router as chat_router
 from .routers.ingest import router as ingest_router
 from .dependencies import get_chatter
+from .utility.embeddings import EmbeddingModelSingleton
 from .utility.llama import Chatter
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Preload the model in the background so health is immediate
+    # Startup: ensure embeddings are initialized synchronously to avoid false-green health
+    # This will raise on failure and prevent the app from starting.
+    await asyncio.to_thread(EmbeddingModelSingleton.initialize)
+    # Llama preload can remain backgrounded if desired
     asyncio.create_task(asyncio.to_thread(get_chatter))
     yield
     # Shutdown: (if needed in the future)

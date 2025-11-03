@@ -170,6 +170,7 @@ def load_ingest(ingest_id: str, conversation=Depends(get_conversation_service)):
         subgraph_raw = data.get("subgraph", {}) or {}
         memories_raw = data.get("memories", []) or []
         name_raw = data.get("name")
+        npc_index_raw = data.get("npc_index", {}) or {}
         wm = conversation.world_memory
         shard_graph = {}
         for name, nd in subgraph_raw.items():
@@ -179,6 +180,37 @@ def load_ingest(ingest_id: str, conversation=Depends(get_conversation_service)):
                 continue
         wm.ingest_subgraphs[ingest_id] = shard_graph
         wm.ingest_memories[ingest_id] = [m for m in memories_raw if isinstance(m, dict)]
+        # Load shard-local NPC index
+        try:
+            idx = {}
+            if isinstance(npc_index_raw, dict):
+                for k, v in npc_index_raw.items():
+                    if isinstance(k, str) and isinstance(v, dict):
+                        idx[k] = v
+            wm.ingest_npc_index[ingest_id] = idx
+        except Exception:
+            wm.ingest_npc_index[ingest_id] = {}
+        # Eagerly compute embeddings for loaded memories so retrieval has no first-hit cost
+        embedding_ms = None
+        try:
+            start = time.perf_counter()
+            embed = wm.embed_fn
+            for m in wm.ingest_memories.get(ingest_id, []):
+                try:
+                    if isinstance(m, dict):
+                        summary = m.get("summary", "")
+                        if isinstance(summary, str):
+                            # Always recompute on load, overwriting any stored vectors
+                            m["vector"] = embed(summary)
+                            # Set recency timestamp to the time of vector computation
+                            m["timestamp"] = time.time()
+                except Exception:
+                    # best-effort: skip problematic entries and continue
+                    continue
+            embedding_ms = int(round((time.perf_counter() - start) * 1000))
+        except Exception:
+            # if embedding model is unavailable, loading should still succeed
+            embedding_ms = None
         if isinstance(name_raw, str) and name_raw.strip():
             wm.ingest_names[ingest_id] = name_raw.strip()[:120]
         # stats
@@ -195,6 +227,7 @@ def load_ingest(ingest_id: str, conversation=Depends(get_conversation_service)):
             "locations": loc_count,
             "memories": mem_count,
             "bytes": file_bytes,
+            "embeddingMs": embedding_ms,
         }
     except Exception:
         raise HTTPException(status_code=500, detail={"error": "load failed"})
@@ -367,6 +400,14 @@ def stream(
                                     "source_context": source_context,
                                 }
                                 world_memory.add_ingest_memory(ingest_id, entry)
+                                # Also upsert shard-local NPC index for persistence
+                                if isinstance(npc_payload, dict):
+                                    try:
+                                        world_memory.add_ingest_npc_update(
+                                            ingest_id, npc_payload, entry
+                                        )
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
                             # If this appears to be a location, upsert a node for hygiene to work
@@ -385,11 +426,30 @@ def stream(
                                             ingest_id, {}
                                         )
                                         if loc_name not in shard:
+                                            node = LocationNode(
+                                                loc_name, mem.get("summary", "")
+                                            )
+                                            # Add canonical aliases for better recall
+                                            try:
+                                                canon = " ".join(
+                                                    loc_name.strip().lower().split()
+                                                )
+                                                art_stripped = canon
+                                                if art_stripped.startswith("the "):
+                                                    art_stripped = art_stripped[4:]
+                                                aliases = []
+                                                for a in (canon, art_stripped):
+                                                    if (
+                                                        a
+                                                        and a != loc_name
+                                                        and a not in aliases
+                                                    ):
+                                                        aliases.append(a)
+                                                node.aliases = aliases
+                                            except Exception:
+                                                node.aliases = []
                                             world_memory.upsert_ingest_location(
-                                                ingest_id,
-                                                LocationNode(
-                                                    loc_name, mem.get("summary", "")
-                                                ),
+                                                ingest_id, node
                                             )
                                     except Exception:
                                         pass

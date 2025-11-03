@@ -5,6 +5,7 @@ import re
 import os
 import threading
 from typing import List, cast
+import logging
 from llama_cpp import (
     Llama,
     llama_log_set,
@@ -44,30 +45,43 @@ class Chatter:
     # class-level shared state
     _llm: Llama | None = None
     _init_error: Exception | None = None
-    _initialized = False  # set True after a completed initialization attempt
+    _initialization_attempted = False  # at least one attempt has been made
+    _initialized_successfully = False  # last attempt succeeded
     _init_lock = threading.Lock()
     _ready_event = threading.Event()
 
     def __init__(self, model_path: str):
         # step 1: ensure model is initialized at class level
-        if not Chatter._initialized:
+        if not Chatter._initialized_successfully:
             # Only one thread initializes; others wait until ready or timeout
             with Chatter._init_lock:
-                if not Chatter._initialized:
+                # Start an attempt if none has occurred yet, or if the last attempt
+                # finished and failed. If an attempt is already in progress, we just wait.
+                if not Chatter._initialization_attempted or (
+                    Chatter._initialization_attempted
+                    and not Chatter._initialized_successfully
+                    and Chatter._ready_event.is_set()
+                ):
                     Chatter._initialize_model(model_path)
-            # mark that we've attempted init; waiters will observe ready_event
+
         if not Chatter._ready_event.is_set():
             # Wait for initialization to complete (success or failure)
             Chatter._ready_event.wait(timeout=INIT_WAIT_SECS)
 
-        # if model init failed earlier raise now
-        if Chatter._init_error is not None:
+        # If still not ready after waiting, surface a clean loading error
+        if not Chatter._ready_event.is_set():
             raise RuntimeError(
-                f"Failed to initialize shared Llama model: {Chatter._init_error}"
+                "Llama model is still loading. Please try again shortly."
+            )
+
+        # if model init failed earlier raise now
+        if Chatter._llm is None:
+            err = Chatter._init_error
+            raise RuntimeError(
+                f"Failed to initialize shared Llama model{f': {err}' if err else ''}"
             )
 
         # bind the shared model handle to this instance
-        # at this point _llm must be not None
         self.llm = cast(Llama, Chatter._llm)
 
         # step 2: per-instance setup (your old stuff)
@@ -99,17 +113,23 @@ class Chatter:
     @classmethod
     def _initialize_model(cls, model_path: str) -> None:
         """
-        Load the model into VRAM once.
-        Safe to call multiple times. Only first call actually loads.
+        Attempt to load the model into VRAM.
+        Safe to call multiple times; guarded by _init_lock by callers.
         """
-        if cls._initialized:
-            return  # already tried
+        if cls._initialized_successfully:
+            return  # already loaded
+
+        # mark attempt starting
+        cls._initialization_attempted = True
+        cls._initialized_successfully = False
+        cls._init_error = None
+        cls._ready_event.clear()
 
         # check GPU first
         free_vram = get_free_vram_mib()
         if free_vram is None:
             cls._init_error = RuntimeError("No GPU detected. GPU is required.")
-            cls._initialized = True
+            cls._llm = None
             cls._ready_event.set()
             return
         if free_vram < MIN_FREE_VRAM_MIB:
@@ -117,7 +137,7 @@ class Chatter:
                 f"Not enough VRAM free. Free VRAM: {free_vram} MiB. "
                 f"Required: {MIN_FREE_VRAM_MIB} MiB."
             )
-            cls._initialized = True
+            cls._llm = None
             cls._ready_event.set()
             return
 
@@ -130,12 +150,28 @@ class Chatter:
                 n_batch=512,
                 verbose=False,
             )
+            cls._initialized_successfully = True
         except Exception as e:
             cls._init_error = e
             cls._llm = None
+            cls._initialized_successfully = False
         finally:
-            cls._initialized = True
             cls._ready_event.set()
+
+    @classmethod
+    def force_reload(cls, model_path: str | None = None) -> None:
+        """Force a re-initialization attempt. Safe if model is already loaded."""
+        with cls._init_lock:
+            # If already loaded successfully, no-op
+            if cls._initialized_successfully and cls._llm is not None:
+                return
+            # Reset state and attempt again
+            cls._llm = None
+            cls._init_error = None
+            cls._initialization_attempted = False
+            cls._initialized_successfully = False
+            cls._ready_event.clear()
+            cls._initialize_model(model_path or MODEL_PATH)
 
     def _get_token_count(self, content: str) -> int:
         try:
@@ -155,20 +191,20 @@ class Chatter:
         - failed: initialization completed with error
         """
         state = "unloaded"
-        if not cls._initialized:
+        if not cls._initialization_attempted:
             state = "unloaded"
+        elif not cls._ready_event.is_set():
+            state = "loading"
+        elif cls._initialized_successfully and cls._llm is not None:
+            state = "ready"
         else:
-            if not cls._ready_event.is_set():
-                state = "loading"
-            else:
-                if cls._llm is not None:
-                    state = "ready"
-                else:
-                    state = "failed"
+            state = "failed"
 
         info: dict[str, object] = {
             "state": state,
             "has_error": cls._init_error is not None,
+            "attempted": cls._initialization_attempted,
+            "success": cls._initialized_successfully,
         }
         try:
             free_vram = get_free_vram_mib()  # may be None
@@ -176,6 +212,15 @@ class Chatter:
             free_vram = None
         info["free_vram_mib"] = free_vram
         info["min_required_vram_mib"] = MIN_FREE_VRAM_MIB
+        if cls._init_error is not None:
+            info["error"] = str(cls._init_error)
+        # Provide a simple UI hint for a traffic-light indicator
+        traffic_light = "red"
+        if state == "ready":
+            traffic_light = "green"
+        elif state == "loading":
+            traffic_light = "yellow"
+        info["traffic_light"] = traffic_light
         return info
 
     def chat(self, user_input: str, world_facts: str | None = None) -> str:
@@ -207,7 +252,7 @@ class Chatter:
 
         raw_response = self.llm.create_chat_completion(
             messages=messages,
-            max_tokens=512,
+            max_tokens=1024,
             temperature=0.7,
             top_p=0.9,
             frequency_penalty=0.0,
@@ -281,20 +326,23 @@ class Chatter:
             "Extract any persistent facts that should be remembered. Return the JSON object:"
         )
 
-        result = self._complete_json(
-            system_prompt, user_prompt, "memory_analysis", debug=True
+        parsed_result, err = self._complete_json(
+            system_prompt, user_prompt, "memory_analysis", expect="dict", debug=True
         )
-        if not result:
+        if not parsed_result or not isinstance(parsed_result, dict):
             return None
 
         required_keys = {"summary", "entities", "type", "confidence"}
-        if not all(key in result for key in required_keys):
+        if not all(key in parsed_result for key in required_keys):
             return None
 
-        if result.get("summary") == "NO_CHANGES" or result.get("type") == "none":
+        if (
+            parsed_result.get("summary") == "NO_CHANGES"
+            or parsed_result.get("type") == "none"
+        ):
             return None
 
-        return result
+        return parsed_result
 
     def summarize_world_changes(
         self, planner_json: dict, resolved_outcome: dict | None = None
@@ -332,18 +380,23 @@ class Chatter:
             "Return the JSON object:"
         )
 
-        result = self._complete_json(system_prompt, user_prompt, "world_change_summary")
-        if not result:
+        parsed_result, err = self._complete_json(
+            system_prompt, user_prompt, "world_change_summary", expect="dict"
+        )
+        if not parsed_result or not isinstance(parsed_result, dict):
             return None
 
         required_keys = {"summary", "entities", "type", "confidence"}
-        if not all(key in result for key in required_keys):
+        if not all(key in parsed_result for key in required_keys):
             return None
 
-        if result.get("summary") == "NO_CHANGES" or result.get("type") == "none":
+        if (
+            parsed_result.get("summary") == "NO_CHANGES"
+            or parsed_result.get("type") == "none"
+        ):
             return None
 
-        return result
+        return parsed_result
 
     def get_planner_response(
         self,
@@ -366,10 +419,57 @@ class Chatter:
         )
 
         # Complete the JSON response
-        result = self._complete_json(
-            system_content, user_content, "planner_response", debug=debug
+        parsed_result, err = self._complete_json(
+            system_content, user_content, "planner_response", expect="dict", debug=debug
         )
-        return result
+        return parsed_result if isinstance(parsed_result, dict) else None
+
+    def store_world_change_from_planner(
+        self,
+        world_memory,
+        world_facts: list[dict],
+        recent_scene: list[dict],
+        player_action: str,
+        resolved_outcome: dict | None = None,
+        debug: bool = False,
+    ) -> str | None:
+        """Run planner -> summarize -> store in world memory with dedupe. Returns memory id or None.
+
+        world_memory: expected to have add_memory(summary, entities, type, ...)
+        """
+        try:
+            planner_json = self.get_planner_response(
+                world_facts, recent_scene, player_action, debug=debug
+            )
+        except Exception:
+            planner_json = None
+        if not isinstance(planner_json, dict):
+            return None
+        try:
+            summary = self.summarize_world_changes(planner_json, resolved_outcome)
+        except Exception:
+            summary = None
+        if not isinstance(summary, dict):
+            return None
+        try:
+            conf = float(summary.get("confidence", 0.0))
+        except Exception:
+            conf = 0.0
+        if conf <= 0.6:
+            return None
+        # Persist to world memory with dedupe and provenance
+        try:
+            source_ctx = "Planner-derived world change"
+            return world_memory.add_memory(
+                summary.get("summary", ""),
+                summary.get("entities", []) or [],
+                summary.get("type", "other"),
+                npc=None,
+                dedupe_check=True,
+                source_context=source_ctx,
+            )
+        except Exception:
+            return None
 
     def infer_player_movement(
         self,
@@ -406,7 +506,10 @@ class Chatter:
             f"Player: {user_message}\nDM: {dm_response}\n\n"
             "Answer with the JSON object."
         )
-        return self._complete_json(system, user, "infer_player_movement", debug=debug)
+        parsed_result, err = self._complete_json(
+            system, user, "infer_player_movement", expect="dict", debug=debug
+        )
+        return parsed_result if isinstance(parsed_result, dict) else None
 
     def extract_graph_changes(
         self,
@@ -442,7 +545,10 @@ class Chatter:
             + f"Player: {user_message}\nDM: {dm_response}\n\n"
             + "Return the JSON object."
         )
-        return self._complete_json(system, user, "extract_graph_changes", debug=debug)
+        parsed_result, err = self._complete_json(
+            system, user, "extract_graph_changes", expect="dict", debug=debug
+        )
+        return parsed_result if isinstance(parsed_result, dict) else None
 
     def extract_memory_from_text(self, text: str, debug: bool = False) -> dict | None:
         """Extract ONE durable memory from arbitrary text.
@@ -455,9 +561,10 @@ class Chatter:
             ' If nothing durable, return {"summary": "NO_CHANGES", "entities": [], "type": "none", "confidence": 0.0}.'
         )
         user = text[:4000]
-        return self._complete_json(
-            system, user, "extract_memory_from_text", debug=debug
+        parsed_result, err = self._complete_json(
+            system, user, "extract_memory_from_text", expect="dict", debug=debug
         )
+        return parsed_result if isinstance(parsed_result, dict) else None
 
     def summarize_snippet(self, text: str, debug: bool = False) -> dict | None:
         """Produce a short 1-2 sentence checkpoint summary for UI."""
@@ -466,7 +573,10 @@ class Chatter:
             'Return ONLY {"summary": string}.'
         )
         user = text[:4000]
-        return self._complete_json(system, user, "summarize_snippet", debug=debug)
+        parsed_result, err = self._complete_json(
+            system, user, "summarize_snippet", expect="dict", debug=debug
+        )
+        return parsed_result if isinstance(parsed_result, dict) else None
 
     def extract_memories_from_text(
         self, text: str, max_items: int = 5, debug: bool = False
@@ -482,9 +592,10 @@ class Chatter:
             "If nothing durable, return []."
         ).replace("{max_items}", str(max_items))
         user = text[:4000]
-        result = self._complete_json(
-            system, user, "extract_memories_from_text", debug=debug
+        parsed_result, err = self._complete_json(
+            system, user, "extract_memories_from_text", expect="list", debug=debug
         )
+        result = parsed_result
         if isinstance(result, list):
             # Filter to dicts
             return [m for m in result if isinstance(m, dict)]
@@ -497,9 +608,19 @@ class Chatter:
         return []
 
     def _complete_json(
-        self, system: str, user: str, request_type: str, debug: bool = False
-    ) -> dict | None:
-        """Complete a prompt expecting JSON response with retry on parse failure."""
+        self,
+        system: str,
+        user: str,
+        request_type: str,
+        expect: str = "dict",
+        debug: bool = False,
+    ) -> tuple[dict | list | None, Exception | None]:
+        """Complete a prompt expecting JSON response with retry on parse failure.
+
+        Returns (parsed_json, error). On type mismatch, returns (parsed, TypeError)
+        so the caller can decide whether to adapt or treat as fatal.
+        """
+        logger = logging.getLogger(__name__)
         messages = cast(
             List[ChatCompletionRequestMessage],
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -565,15 +686,45 @@ class Chatter:
                 # Try to parse as JSON
                 try:
                     parsed = json.loads(cleaned_text)
-                    if isinstance(parsed, dict):
+                    if expect == "dict" and not isinstance(parsed, dict):
+                        type_err = TypeError(
+                            f"{request_type}: expected dict but got {type(parsed).__name__}"
+                        )
                         if debug:
-                            print("  ✓ Valid JSON parsed")
-                        return parsed
-                    elif debug:
-                        print(f"  ✗ Parsed but not a dict: {type(parsed)}")
+                            print(f"  ✗ Type mismatch: {type_err}")
+                        logger.warning(
+                            "%s parse type mismatch on attempt %d: %s",
+                            request_type,
+                            attempt + 1,
+                            type_err,
+                        )
+                        return parsed, type_err
+                    if expect == "list" and not isinstance(parsed, list):
+                        type_err = TypeError(
+                            f"{request_type}: expected list but got {type(parsed).__name__}"
+                        )
+                        if debug:
+                            print(f"  ✗ Type mismatch: {type_err}")
+                        logger.warning(
+                            "%s parse type mismatch on attempt %d: %s",
+                            request_type,
+                            attempt + 1,
+                            type_err,
+                        )
+                        return parsed, type_err
+
+                    if debug:
+                        print("  ✓ Valid JSON parsed")
+                    return parsed, None
                 except json.JSONDecodeError as e:
                     if debug:
                         print(f"  ✗ JSON parse error: {e}")
+                    logger.warning(
+                        "%s JSON parse failed on attempt %d: %s",
+                        request_type,
+                        attempt + 1,
+                        e,
+                    )
                     if attempt == 0:
                         # Retry with correction prompt
                         correction_prompt = (
@@ -583,14 +734,20 @@ class Chatter:
                         messages.append({"role": "assistant", "content": model_text})
                         messages.append({"role": "user", "content": correction_prompt})
                         continue
-                    return None
+                    return None, e
 
             except Exception as e:
                 if debug:
                     print(f"  ✗ Exception during generation: {e}")
-                return None
+                logging.getLogger(__name__).error(
+                    "%s generation failed on attempt %d: %s",
+                    request_type,
+                    attempt + 1,
+                    e,
+                )
+                return None, e
 
-        return None
+        return None, RuntimeError(f"{request_type}: failed to produce valid JSON")
 
     def _safe_truncate(self, text: str, max_tokens: int) -> str:
         """Truncate text to approximately max_tokens, preserving word boundaries."""
