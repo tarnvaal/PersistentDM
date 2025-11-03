@@ -38,6 +38,19 @@ def clear_chat(req: ClearRequest):
         wm.npc_index.clear()
         wm.location_graph.locations.clear()
         wm.location_graph.player_location = None
+        # Also clear ingest layer in-memory (shards on disk remain untouched)
+        try:
+            wm.ingest_subgraphs.clear()
+        except Exception:
+            pass
+        try:
+            wm.ingest_memories.clear()
+        except Exception:
+            pass
+        try:
+            wm.ingest_names.clear()
+        except Exception:
+            pass
         return ClearResponse(success=True)
     else:
         return ClearResponse(success=False)
