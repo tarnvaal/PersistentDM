@@ -445,17 +445,61 @@ def stream(
                         except Exception:
                             continue
 
-                    # Get target sentence plus one before and one after
-                    start_idx = max(0, best_idx - 1)
-                    end_idx = min(len(sentences), best_idx + 2)
-                    selected_sentences = sentences[start_idx:end_idx]
-                    chosen = " ".join(selected_sentences)
+                    # Ensure the primary target sentence is fully captured if possible
+                    target_sentence = sentences[best_idx]
+                    if len(target_sentence) >= max_chars:
+                        # If the target sentence alone exceeds window, hard cap with ellipsis
+                        return target_sentence[: max_chars - 1] + "…"
 
-                    # Truncate if exceeds max_chars
-                    if len(chosen) > max_chars:
-                        chosen = chosen[: max_chars - 1] + "…"
+                    # Compute remaining budget and expand evenly to left and right
+                    remaining = max_chars - len(target_sentence)
+                    left_budget = remaining // 2
+                    right_budget = remaining - left_budget
 
-                    return chosen
+                    # Join surrounding context into plain text buffers
+                    left_context = " ".join(sentences[:best_idx])
+                    right_context = " ".join(sentences[best_idx + 1 :])
+
+                    left_piece = left_context[-left_budget:] if left_budget > 0 else ""
+                    right_piece = (
+                        right_context[:right_budget] if right_budget > 0 else ""
+                    )
+
+                    # Normalize spacing at the boundaries without double-counting into budget
+                    left_join = (
+                        ""
+                        if not left_piece
+                        else ("" if left_piece.endswith(" ") else " ")
+                    )
+                    right_join = (
+                        ""
+                        if not right_piece
+                        else ("" if right_piece.startswith(" ") else " ")
+                    )
+
+                    snippet = f"{left_piece}{left_join}{target_sentence}{right_join}{right_piece}"
+
+                    # If we exceeded max_chars due to added joins, trim from the outsides but never from the target sentence
+                    if len(snippet) > max_chars:
+                        # Find target span
+                        base_start = len(left_piece) + len(left_join)
+                        base_end = base_start + len(target_sentence)
+
+                        # Trim alternately from right and left until within budget
+                        excess = len(snippet) - max_chars
+                        left_prefix = snippet[:base_start]
+                        right_suffix = snippet[base_end:]
+                        while excess > 0 and (left_prefix or right_suffix):
+                            if len(right_suffix) >= len(left_prefix) and right_suffix:
+                                right_suffix = right_suffix[:-1]
+                            elif left_prefix:
+                                left_prefix = left_prefix[1:]
+                            excess -= 1
+                        snippet = (
+                            f"{left_prefix}{snippet[base_start:base_end]}{right_suffix}"
+                        )
+
+                    return snippet
                 except Exception:
                     # Robust fallback
                     t = (text_block or "").strip()
