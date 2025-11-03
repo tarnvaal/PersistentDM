@@ -8,6 +8,39 @@ import uuid
 from ..utility.embeddings import dot_sim
 
 
+def _build_memory_text_for_embedding(memory_dict: Dict[str, Any]) -> str:
+    """Combine memory fields (except timestamp) into a single text string for embedding.
+
+    Includes: type, summary, entities, and source_context.
+    NPC data is handled separately via NPC index, so not included here.
+    """
+    parts: List[str] = []
+
+    # Type as prefix for semantic context
+    mem_type = memory_dict.get("type", "")
+    if mem_type:
+        parts.append(f"[{mem_type}]")
+
+    # Summary (main content)
+    summary = memory_dict.get("summary", "")
+    if summary:
+        parts.append(summary)
+
+    # Entities as comma-separated list
+    entities = memory_dict.get("entities", [])
+    if entities and isinstance(entities, list):
+        entities_str = ", ".join(str(e) for e in entities if e)
+        if entities_str:
+            parts.append(f"Entities: {entities_str}")
+
+    # Source context (window snippet from ingestion or conversation context)
+    source_context = memory_dict.get("source_context")
+    if source_context and isinstance(source_context, str) and source_context.strip():
+        parts.append(f"Context: {source_context.strip()}")
+
+    return " ".join(parts)
+
+
 class WorldMemory:
     def __init__(self, embed_fn):
         self.memories: List[Dict[str, Any]] = []
@@ -119,9 +152,16 @@ class WorldMemory:
                         for m in self.ingest_memories.get(ingest_id, []):
                             try:
                                 if isinstance(m, dict):
-                                    summary = m.get("summary", "")
-                                    if isinstance(summary, str):
-                                        m["vector"] = embed(summary)
+                                    # Ensure each ingest memory has a stable id
+                                    try:
+                                        mid = m.get("id")
+                                        if not isinstance(mid, str) or not mid.strip():
+                                            m["id"] = str(uuid.uuid4())
+                                    except Exception:
+                                        m["id"] = str(uuid.uuid4())
+                                    combined_text = _build_memory_text_for_embedding(m)
+                                    if combined_text:
+                                        m["vector"] = embed(combined_text)
                                         # Align recency with vector compute time on load
                                         m["timestamp"] = time.time()
                             except Exception:
@@ -217,8 +257,17 @@ class WorldMemory:
         source_context: Optional[str] = None,
     ) -> str:
         """Store a durable world fact."""
+        # Build entry dict for embedding helper
+        entry_dict = {
+            "summary": summary,
+            "entities": entities,
+            "type": mem_type,
+            "source_context": source_context,
+        }
+
         if dedupe_check and self.memories:
-            vec = self.embed_fn(summary)
+            combined_text = _build_memory_text_for_embedding(entry_dict)
+            vec = self.embed_fn(combined_text)
             recent_memories = self.memories[-10:]
             for memory in recent_memories:
                 similarity = dot_sim(vec, memory["vector"])
@@ -226,7 +275,8 @@ class WorldMemory:
                     return memory["id"]
 
         memory_id = str(uuid.uuid4())
-        vec = self.embed_fn(summary)
+        combined_text = _build_memory_text_for_embedding(entry_dict)
+        vec = self.embed_fn(combined_text)
 
         entry = {
             "id": memory_id,

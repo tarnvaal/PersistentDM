@@ -216,12 +216,17 @@ function App() {
     el.scrollTo({ top: el.scrollHeight, behavior });
   };
 
-  // Stick to bottom only if user is already at bottom
+  // Stick to bottom only for new messages (length grows), not for in-place updates
+  const prevLenRef = useRef(0);
   useEffect(() => {
     if (!messagesRef.current) return;
-    if (isAtBottomRef.current) {
+    const prevLen = prevLenRef.current;
+    const curLen = history.length;
+    // Only auto-scroll when a new message was added
+    if (curLen > prevLen && isAtBottomRef.current) {
       scrollToBottom("auto");
     }
+    prevLenRef.current = curLen;
   }, [history]);
 
   useEffect(() => {
@@ -280,6 +285,15 @@ function App() {
       const es = new EventSource(`${apiBase}/chat/stream?message=${encodeURIComponent(text)}`);
       const assistantId = `assistant-${Date.now()}`;
 
+      // Immediately create the assistant message bubble with "Loading..." instead of waiting
+      setHistory((h) => {
+        const withoutTyping = h.filter((m) => m.id !== typingId);
+        return [
+          ...withoutTyping,
+          { role: "assistant", id: assistantId, content: "Loading...", ready: false }
+        ];
+      });
+
       const closeES = () => {
         try { es.close(); } catch (_) {}
       };
@@ -288,13 +302,9 @@ function App() {
         try {
           const data = JSON.parse(ev.data || "{}");
           const trimmedReply = (data.reply || "").trimEnd();
-          setHistory((h) => {
-            const withoutTyping = h.filter((m) => m.id !== typingId);
-            return [
-              ...withoutTyping,
-              { role: "assistant", id: assistantId, content: trimmedReply, ready: false }
-            ];
-          });
+          setHistory((h) => h.map((m) => (
+            m.id === assistantId ? { ...m, content: trimmedReply } : m
+          )));
         } catch (_) {}
       });
 
@@ -314,6 +324,8 @@ function App() {
 
       es.addEventListener("error", () => {
         closeES();
+        // Remove the loading message before falling back
+        setHistory((h) => h.filter((m) => m.id !== assistantId));
         // Seamless fallback to non-streaming POST
         postFallback();
       });
@@ -654,7 +666,9 @@ function App() {
                         <div className="h-px bg-[#344046] my-2" />
                       </div>
                     )}
-                    {item.context ? (
+                    {item.context === undefined ? (
+                      <span className="italic opacity-60">Loading context…</span>
+                    ) : item.context ? (
                       <>
                         <div className="text-xs uppercase tracking-wide opacity-70 mb-1">Context sent to model</div>
                         <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{item.context}</pre>

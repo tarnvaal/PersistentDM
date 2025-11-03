@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from ..dependencies import get_conversation_service
 from ..world.memory_utils import sanitize_entities
-from ..world.memory import LocationNode
+from ..world.memory import LocationNode, _build_memory_text_for_embedding
 from ..world.context_builder import summarize_memory_context
 from ..utility.embeddings import dot_sim
 
@@ -200,10 +200,10 @@ def load_ingest(ingest_id: str, conversation=Depends(get_conversation_service)):
             for m in wm.ingest_memories.get(ingest_id, []):
                 try:
                     if isinstance(m, dict):
-                        summary = m.get("summary", "")
-                        if isinstance(summary, str):
+                        combined_text = _build_memory_text_for_embedding(m)
+                        if combined_text:
                             # Always recompute on load, overwriting any stored vectors
-                            m["vector"] = embed(summary)
+                            m["vector"] = embed(combined_text)
                             # Set recency timestamp to the time of vector computation
                             m["timestamp"] = time.time()
                 except Exception:
@@ -403,10 +403,11 @@ def stream(
             def _select_relevant_snippet(
                 text_block: str, summary: str, max_chars: int = 300
             ) -> str:
-                """Pick a contiguous, in-order snippet from text_block most relevant to summary.
+                """Find the sentence most relevant to summary and return it with one before/after.
 
-                Uses sentence-level embeddings with sliding windows of 1-3 sentences,
-                chooses the highest dot_sim to the summary embedding while staying under max_chars.
+                Finds the sentence with highest similarity to summary using embeddings,
+                then returns that sentence plus one sentence before (if available) and
+                one sentence after (if available).
                 Falls back to leading slice on failure.
                 """
                 try:
@@ -430,54 +431,30 @@ def stream(
 
                     embed = world_memory.embed_fn
                     sum_vec = embed(summ)
-                    sent_vecs = []
-                    for s in sentences:
+
+                    # Find the sentence with highest similarity to summary
+                    best_idx = 0
+                    best_score = float("-inf")
+                    for i, s in enumerate(sentences):
                         try:
-                            sent_vecs.append((s, embed(s)))
+                            sent_vec = embed(s)
+                            score = dot_sim(sum_vec, sent_vec)
+                            if score > best_score:
+                                best_score = score
+                                best_idx = i
                         except Exception:
-                            sent_vecs.append((s, None))
+                            continue
 
-                    def _avg_vec(vecs):
-                        valid = [v for v in vecs if v is not None]
-                        if not valid:
-                            return None
-                        n = len(valid)
-                        acc = [0.0] * len(valid[0])
-                        for v in valid:
-                            for i, x in enumerate(v):
-                                acc[i] += x
-                        return [x / n for x in acc]
+                    # Get target sentence plus one before and one after
+                    start_idx = max(0, best_idx - 1)
+                    end_idx = min(len(sentences), best_idx + 2)
+                    selected_sentences = sentences[start_idx:end_idx]
+                    chosen = " ".join(selected_sentences)
 
-                    best = (float("-inf"), "")
-                    max_window = 3
-                    for i in range(len(sentences)):
-                        for w in range(1, max_window + 1):
-                            j = i + w
-                            if j > len(sentences):
-                                break
-                            span_sents = sentences[i:j]
-                            candidate = " ".join(span_sents)
-                            if not candidate:
-                                continue
-                            if len(candidate) > max_chars:
-                                # early break if even the first window is too long
-                                if w == 1:
-                                    candidate = candidate[: max_chars - 1] + "…"
-                                else:
-                                    break
-                            vecs = [vec for (_, vec) in sent_vecs[i:j]]
-                            span_vec = _avg_vec(vecs)
-                            score = (
-                                dot_sim(span_vec, sum_vec)
-                                if span_vec is not None
-                                else 0.0
-                            )
-                            if score > best[0]:
-                                best = (score, candidate)
-
-                    chosen = best[1] or text[: max_chars - 1]
+                    # Truncate if exceeds max_chars
                     if len(chosen) > max_chars:
                         chosen = chosen[: max_chars - 1] + "…"
+
                     return chosen
                 except Exception:
                     # Robust fallback
@@ -530,6 +507,7 @@ def stream(
                             # Store in ingest layer for this shard (no session mutation)
                             try:
                                 entry = {
+                                    "id": str(uuid.uuid4()),
                                     "summary": mem.get("summary", ""),
                                     "type": mem.get("type", "other"),
                                     "entities": entities,

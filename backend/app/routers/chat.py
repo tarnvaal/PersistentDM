@@ -100,8 +100,17 @@ def stream_chat(
                 try:
                     mem_scored = []
                     try:
-                        mem_scored = weighted_retrieve_with_scores(
-                            conv.world_memory, message, k=4, min_total_score=0.25
+                        from ..world.context_builder import (
+                            multi_index_retrieve_with_scores,
+                        )
+
+                        mem_scored = multi_index_retrieve_with_scores(
+                            conv.world_memory,
+                            message,
+                            k_general=8,
+                            k_per_entity=3,
+                            k_per_type=2,
+                            min_total_score=0.25,
                         )
                     except Exception:
                         mem_scored = []
@@ -121,6 +130,13 @@ def stream_chat(
                     if location_str:
                         parts.append(location_str)
                     merged_context = "\n\n".join(parts) if parts else None
+
+                    # Add total word count to context
+                    if merged_context:
+                        word_count = len(merged_context.split())
+                        merged_context = (
+                            f"{merged_context}\n\n[Total: {word_count} words]"
+                        )
                     relevance_payload = {
                         "memories": [
                             {
@@ -186,7 +202,6 @@ def stream_chat(
 
     # Import functions used above
     from ..world.context_builder import (
-        weighted_retrieve_with_scores,
         format_world_facts,
         format_npc_cards,
         format_location_context,

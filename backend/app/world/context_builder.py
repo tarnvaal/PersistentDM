@@ -2,7 +2,7 @@ import time
 from typing import List, Dict, Any, Tuple
 
 from ..utility.embeddings import dot_sim
-from .memory import WorldMemory
+from .memory import WorldMemory, _build_memory_text_for_embedding
 
 
 def _type_bonus(mem_type: str) -> float:
@@ -40,8 +40,10 @@ def _gather_all_memories(world_memory: WorldMemory) -> List[Dict[str, Any]]:
                 # Ensure vector present (compute and cache in-memory only)
                 if "vector" not in m:
                     try:
-                        vec = world_memory.embed_fn(m.get("summary", ""))
-                        m["vector"] = vec
+                        combined_text = _build_memory_text_for_embedding(m)
+                        if combined_text:
+                            vec = world_memory.embed_fn(combined_text)
+                            m["vector"] = vec
                     except Exception:
                         continue
                 combined.append(m)
@@ -130,6 +132,170 @@ def weighted_retrieve_with_scores(
                 "bonus": float(bonus),
             }
         )
+    return results
+
+
+def multi_index_retrieve_with_scores(
+    world_memory: WorldMemory,
+    query: str,
+    k_general: int = 3,
+    k_per_entity: int = 2,
+    k_per_type: int = 1,
+    min_total_score: float | None = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve memories using multiple indices for diverse context.
+
+    Retrieves memories from:
+    1. General similarity search (top k_general)
+    2. Entity-based: for each entity in top results, get k_per_entity memories
+    3. Type-based: for important types (threat, npc, goal), get k_per_type memories each
+
+    Returns deduplicated list with scores.
+    """
+    base = _gather_all_memories(world_memory)
+    if not base:
+        return []
+
+    now = time.time()
+    qvec = world_memory.embed_fn(query)
+
+    # Compute all scores once
+    all_scored: List[Tuple[float, float, float, float, Dict[str, Any]]] = []
+    for m in base:
+        score = dot_sim(qvec, m["vector"])
+        age_sec = max(0.0, now - float(m.get("timestamp", now)))
+        recency = pow(0.5, age_sec / 600.0) * 0.05
+        bonus = _type_bonus(str(m.get("type", "")))
+        total = score + recency + bonus
+        all_scored.append((total, score, recency, bonus, m))
+
+    all_scored.sort(key=lambda x: x[0], reverse=True)
+
+    if not all_scored:
+        return []
+
+    # Apply threshold, but ensure we always have enough results
+    # Similar to old weighted_retrieve_with_scores: if threshold filters everything, keep top results anyway
+    thresholded = all_scored
+    if min_total_score is not None:
+        filtered = [row for row in all_scored if row[0] >= min_total_score]
+        if filtered:
+            thresholded = filtered
+        # If threshold filters everything, keep top k_general anyway (same as old behavior)
+        elif all_scored:
+            thresholded = all_scored[
+                : max(k_general, 10)
+            ]  # Keep enough for entity/type extraction
+
+    # 1. General similarity (top k_general from thresholded, or all if fewer)
+    selected_ids: set = set()
+    results: List[Dict[str, Any]] = []
+
+    for total, score, recency, bonus, m in thresholded[:k_general]:
+        # Build a resilient dedupe key: prefer id; fallback to summary+timestamp
+        mid = m.get("id")
+        fallback_key = f"{m.get('summary','')}|{m.get('timestamp','')}"
+        key = mid if isinstance(mid, str) and mid else fallback_key
+        if key not in selected_ids:
+            selected_ids.add(key)
+            results.append(
+                {
+                    "summary": m.get("summary", ""),
+                    "type": m.get("type", "unknown"),
+                    "entities": m.get("entities", []),
+                    "_raw": m,
+                    "total": float(total),
+                    "similarity": float(score),
+                    "recency": float(recency),
+                    "bonus": float(bonus),
+                }
+            )
+
+    # 2. Extract entities from top results and retrieve more by entity
+    # Search in larger pool (top 100) for entity matches, with relaxed threshold
+    entity_search_pool = all_scored[:100] if len(all_scored) > 100 else all_scored
+    # Use a more relaxed threshold for entity/type matches (50% of original threshold or 0.1, whichever is lower)
+    entity_min_score = (
+        min(min_total_score * 0.5, 0.1) if min_total_score is not None else 0.0
+    )
+
+    entity_counts: Dict[str, int] = {}
+    # Look at more results for entity extraction to get better entity diversity
+    for _, _, _, _, m in thresholded[: min(k_general * 3, len(thresholded))]:
+        entities = m.get("entities", [])
+        if isinstance(entities, list):
+            for e in entities:
+                if isinstance(e, str) and e.strip():
+                    entity_counts[e.strip()] = entity_counts.get(e.strip(), 0) + 1
+
+    # For top entities, retrieve memories containing them from larger pool
+    top_entities = sorted(entity_counts.items(), key=lambda x: x[1], reverse=True)[
+        :3
+    ]  # Top 3 entities
+    for entity, _ in top_entities:
+        entity_lower = entity.lower()
+        count = 0
+        for total, score, recency, bonus, m in entity_search_pool:
+            if count >= k_per_entity:
+                break
+            # Still respect minimum score for entity matches
+            if total < entity_min_score:
+                continue
+            mid = m.get("id")
+            fallback_key = f"{m.get('summary','')}|{m.get('timestamp','')}"
+            key = mid if isinstance(mid, str) and mid else fallback_key
+            if key not in selected_ids:
+                entities = m.get("entities", [])
+                if isinstance(entities, list):
+                    mem_entities_lower = [str(e).lower() for e in entities if e]
+                    if entity_lower in mem_entities_lower:
+                        selected_ids.add(key)
+                        results.append(
+                            {
+                                "summary": m.get("summary", ""),
+                                "type": m.get("type", "unknown"),
+                                "entities": m.get("entities", []),
+                                "_raw": m,
+                                "total": float(total),
+                                "similarity": float(score),
+                                "recency": float(recency),
+                                "bonus": float(bonus),
+                            }
+                        )
+                        count += 1
+
+    # 3. Type-based: get k_per_type from important types (also search in larger pool)
+    important_types = ["threat", "npc", "goal", "location"]
+    for mem_type in important_types:
+        count = 0
+        for total, score, recency, bonus, m in entity_search_pool:
+            if count >= k_per_type:
+                break
+            # Respect minimum score for type matches
+            if total < entity_min_score:
+                continue
+            mid = m.get("id")
+            fallback_key = f"{m.get('summary','')}|{m.get('timestamp','')}"
+            key = mid if isinstance(mid, str) and mid else fallback_key
+            if key not in selected_ids:
+                if str(m.get("type", "")).lower() == mem_type:
+                    selected_ids.add(key)
+                    results.append(
+                        {
+                            "summary": m.get("summary", ""),
+                            "type": m.get("type", "unknown"),
+                            "entities": m.get("entities", []),
+                            "_raw": m,
+                            "total": float(total),
+                            "similarity": float(score),
+                            "recency": float(recency),
+                            "bonus": float(bonus),
+                        }
+                    )
+                    count += 1
+
+    # Sort final results by total score
+    results.sort(key=lambda x: x["total"], reverse=True)
     return results
 
 

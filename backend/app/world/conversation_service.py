@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 from ..utility.llama import Chatter
 from .memory import WorldMemory
 from .context_builder import (
-    weighted_retrieve_with_scores,
     format_world_facts,
     format_npc_cards,
     format_location_context,
@@ -94,9 +93,16 @@ class ConversationService:
         saved_this_turn: Optional[Dict[str, Any]] = None
         if supports_context:
             try:
-                # Retrieve memories with scores and thresholds
-                mem_scored = weighted_retrieve_with_scores(
-                    self.world_memory, user_message, k=4, min_total_score=0.25
+                # Retrieve memories using multi-index approach for diverse context
+                from .context_builder import multi_index_retrieve_with_scores
+
+                mem_scored = multi_index_retrieve_with_scores(
+                    self.world_memory,
+                    user_message,
+                    k_general=8,
+                    k_per_entity=3,
+                    k_per_type=2,
+                    min_total_score=0.25,
                 )
                 facts_str = format_world_facts([m["_raw"] for m in mem_scored])
 
@@ -117,6 +123,11 @@ class ConversationService:
                 if location_str:
                     parts.append(location_str)
                 merged_context = "\n\n".join(parts) if parts else None
+
+                # Add total word count to context
+                if merged_context:
+                    word_count = len(merged_context.split())
+                    merged_context = f"{merged_context}\n\n[Total: {word_count} words]"
 
                 # Build lightweight relevance payload for UI/debug
                 relevance_payload = {
