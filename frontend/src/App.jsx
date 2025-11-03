@@ -541,6 +541,12 @@ function App() {
                                         {c.data?.explanation && (
                                           <div className="mt-1 italic opacity-80">{c.data.explanation}</div>
                                         )}
+                                        {c.data?.windowText && (
+                                          <div className="mt-1">
+                                            <div className="uppercase tracking-wide opacity-70 text-[10px]">Window</div>
+                                            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed opacity-90">{c.data.windowText}</pre>
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                     {c.kind === "hygiene" && (

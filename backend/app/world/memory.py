@@ -93,7 +93,11 @@ class WorldMemory:
             for m in raw_memories:
                 if isinstance(m, dict):
                     try:
-                        cleaned = {k: v for k, v in m.items() if k != "vector"}
+                        cleaned = {
+                            k: v
+                            for k, v in m.items()
+                            if k not in ("vector", "window_vector")
+                        }
                         memories.append(cleaned)
                     except Exception:
                         memories.append(m)
@@ -159,9 +163,20 @@ class WorldMemory:
                                             m["id"] = str(uuid.uuid4())
                                     except Exception:
                                         m["id"] = str(uuid.uuid4())
-                                    combined_text = _build_memory_text_for_embedding(m)
-                                    if combined_text:
-                                        m["vector"] = embed(combined_text)
+                                    # Recompute primary explanation vector from explicit explanation when available
+                                    expl = m.get("explanation")
+                                    if isinstance(expl, str) and expl.strip():
+                                        m["vector"] = embed(expl)
+                                    else:
+                                        combined_text = (
+                                            _build_memory_text_for_embedding(m)
+                                        )
+                                        if combined_text:
+                                            m["vector"] = embed(combined_text)
+                                    # Recompute window vector if window_text present
+                                    wtxt = m.get("window_text")
+                                    if isinstance(wtxt, str) and wtxt.strip():
+                                        m["window_vector"] = embed(wtxt)
                                         # Align recency with vector compute time on load
                                         m["timestamp"] = time.time()
                             except Exception:

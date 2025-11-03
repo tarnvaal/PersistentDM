@@ -37,15 +37,22 @@ def _gather_all_memories(world_memory: WorldMemory) -> List[Dict[str, Any]]:
             for m in lst:
                 if not isinstance(m, dict):
                     continue
-                # Ensure vector present (compute and cache in-memory only)
-                if "vector" not in m:
-                    try:
-                        combined_text = _build_memory_text_for_embedding(m)
-                        if combined_text:
-                            vec = world_memory.embed_fn(combined_text)
-                            m["vector"] = vec
-                    except Exception:
-                        continue
+                # Ensure primary and window vectors present (compute and cache in-memory only)
+                try:
+                    if "vector" not in m:
+                        expl = m.get("explanation")
+                        if isinstance(expl, str) and expl.strip():
+                            m["vector"] = world_memory.embed_fn(expl)
+                        else:
+                            combined_text = _build_memory_text_for_embedding(m)
+                            if combined_text:
+                                m["vector"] = world_memory.embed_fn(combined_text)
+                    if "window_vector" not in m:
+                        wtxt = m.get("window_text")
+                        if isinstance(wtxt, str) and wtxt.strip():
+                            m["window_vector"] = world_memory.embed_fn(wtxt)
+                except Exception:
+                    continue
                 combined.append(m)
     except Exception:
         pass
@@ -71,7 +78,11 @@ def weighted_retrieve(
 
     weighted: List[Tuple[float, float, float, float, Dict[str, Any]]] = []
     for m in base:
-        score = dot_sim(qvec, m["vector"])  # similarity
+        base_score = dot_sim(qvec, m["vector"]) if "vector" in m else 0.0
+        win_score = (
+            dot_sim(qvec, m["window_vector"]) if "window_vector" in m else float("-inf")
+        )
+        score = max(base_score, win_score)  # similarity across explanation/window
         age_sec = max(0.0, now - float(m.get("timestamp", now)))
         recency = pow(0.5, age_sec / 600.0) * 0.05  # half-life ~10 min, max +0.05
         bonus = _type_bonus(str(m.get("type", "")))
@@ -104,7 +115,11 @@ def weighted_retrieve_with_scores(
 
     weighted: List[Tuple[float, float, float, float, Dict[str, Any]]] = []
     for m in base:
-        score = dot_sim(qvec, m["vector"])  # similarity
+        base_score = dot_sim(qvec, m["vector"]) if "vector" in m else 0.0
+        win_score = (
+            dot_sim(qvec, m["window_vector"]) if "window_vector" in m else float("-inf")
+        )
+        score = max(base_score, win_score)  # similarity across explanation/window
         age_sec = max(0.0, now - float(m.get("timestamp", now)))
         recency = pow(0.5, age_sec / 600.0) * 0.05  # half-life ~10 min, max +0.05
         bonus = _type_bonus(str(m.get("type", "")))
@@ -162,7 +177,11 @@ def multi_index_retrieve_with_scores(
     # Compute all scores once
     all_scored: List[Tuple[float, float, float, float, Dict[str, Any]]] = []
     for m in base:
-        score = dot_sim(qvec, m["vector"])
+        base_score = dot_sim(qvec, m["vector"]) if "vector" in m else 0.0
+        win_score = (
+            dot_sim(qvec, m["window_vector"]) if "window_vector" in m else float("-inf")
+        )
+        score = max(base_score, win_score)
         age_sec = max(0.0, now - float(m.get("timestamp", now)))
         recency = pow(0.5, age_sec / 600.0) * 0.05
         bonus = _type_bonus(str(m.get("type", "")))

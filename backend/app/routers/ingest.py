@@ -200,12 +200,20 @@ def load_ingest(ingest_id: str, conversation=Depends(get_conversation_service)):
             for m in wm.ingest_memories.get(ingest_id, []):
                 try:
                     if isinstance(m, dict):
-                        combined_text = _build_memory_text_for_embedding(m)
-                        if combined_text:
-                            # Always recompute on load, overwriting any stored vectors
-                            m["vector"] = embed(combined_text)
-                            # Set recency timestamp to the time of vector computation
-                            m["timestamp"] = time.time()
+                        # Primary vector: use explicit explanation if present, else combined
+                        expl = m.get("explanation")
+                        if isinstance(expl, str) and expl.strip():
+                            m["vector"] = embed(expl)
+                        else:
+                            combined_text = _build_memory_text_for_embedding(m)
+                            if combined_text:
+                                m["vector"] = embed(combined_text)
+                        # Window vector: use explicit window_text if present
+                        wtxt = m.get("window_text")
+                        if isinstance(wtxt, str) and wtxt.strip():
+                            m["window_vector"] = embed(wtxt)
+                        # Set recency timestamp to the time of vector computation
+                        m["timestamp"] = time.time()
                 except Exception:
                     # best-effort: skip problematic entries and continue
                     continue
@@ -255,10 +263,10 @@ def stream(
         if total_words == 0
         else max(0.5, min(2.0, (len(text) / 4) / max(1, total_words)))
     )
-    # Tokenization granularity (approx): process 200 tokens with stride 100
+    # Fixed internal window size in words
     window_tokens = 200
     stride_tokens = 100
-    window_words = max(1, int(window_tokens / tokens_per_word))
+    window_words = 134
     if stride_words_override is not None:
         try:
             stride_words = max(1, min(5000, int(stride_words_override)))
@@ -547,9 +555,19 @@ def stream(
                                 chunk_text, mem_summary, 300
                             )
                             source_context = f"Ingested: {snippet}" if snippet else None
+                            # Full window text for this memory (entire chunk)
+                            window_text = chunk_text
 
                             # Store in ingest layer for this shard (no session mutation)
                             try:
+                                # Build explanation text and embed both explanation+window
+                                explanation = (
+                                    summarize_memory_context(
+                                        {"source_context": source_context}
+                                    )
+                                    if source_context
+                                    else None
+                                )
                                 entry = {
                                     "id": str(uuid.uuid4()),
                                     "summary": mem.get("summary", ""),
@@ -561,7 +579,29 @@ def stream(
                                     "confidence": conf,
                                     "timestamp": time.time(),
                                     "source_context": source_context,
+                                    "explanation": explanation,
+                                    "window_text": window_text,
                                 }
+                                # Compute dual embeddings: explanation vector (primary) and window vector
+                                try:
+                                    embed = world_memory.embed_fn
+                                    if (
+                                        isinstance(explanation, str)
+                                        and explanation.strip()
+                                    ):
+                                        entry["vector"] = embed(explanation)
+                                    else:
+                                        combined_text = (
+                                            _build_memory_text_for_embedding(entry)
+                                        )
+                                        entry["vector"] = embed(combined_text)
+                                    if (
+                                        isinstance(window_text, str)
+                                        and window_text.strip()
+                                    ):
+                                        entry["window_vector"] = embed(window_text)
+                                except Exception:
+                                    pass
                                 world_memory.add_ingest_memory(ingest_id, entry)
                                 # Also upsert shard-local NPC index for persistence
                                 if isinstance(npc_payload, dict):
@@ -618,13 +658,6 @@ def stream(
                                         pass
 
                             try:
-                                explanation = (
-                                    summarize_memory_context(
-                                        {"source_context": source_context}
-                                    )
-                                    if source_context
-                                    else None
-                                )
                                 yield _sse(
                                     "saved",
                                     {
@@ -636,7 +669,8 @@ def stream(
                                         if isinstance(npc_payload, dict)
                                         else None,
                                         "confidence": conf,
-                                        "explanation": explanation,
+                                        "explanation": entry.get("explanation"),
+                                        "windowText": window_text,
                                     },
                                 )
                                 # Update rolling context after successful save event
