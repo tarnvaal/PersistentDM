@@ -89,7 +89,9 @@ class Chatter:
         self.display_name = "DM"
         self.sysprompt_content = (
             "You are the dungeon master. "
-            "You describe the world to the player in second person present tense. "
+            "You describe the world to the player in second person present tense unless acting as a specific character"
+            "If you are acting as a specific character use first person present tense."
+            "Characters should have internal dialogue within their own head."
             "You end each response with a question to the player. "
             "If additional system messages include World Facts or NPC Cards, treat them as optional context: "
             "use them only when directly relevant to the player's latest action and the current scene; otherwise ignore them. "
