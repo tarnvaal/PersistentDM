@@ -1,7 +1,6 @@
 # <img src="frontend/src/icon.webp" alt="PersistentDM icon" width="28" style="vertical-align:middle;margin-right:8px;" /> PersistentDM
 
 <img src="screenshots/ShardDemo.webp" alt="ShardDemo" style="max-width:100%;height:auto;margin:16px 0;" />
-Here's a condensed, more "human-friendly" version of the README.
 
 PersistentDM is a text-based adventure roleplay system that uses an AI "Dungeon Master" to create an interactive story. Unlike simple chatbots, it remembers what happens in the world and uses that knowledge to generate its responses.
 
