@@ -21,3 +21,31 @@ Content-Type: {{contentType}}
 {
   "clear": true
 }
+
+### Search - Basic
+# @name search_basic
+GET {{baseUrl}}/search?q=blacksmith
+
+### Search - Literal Mode
+# @name search_literal
+GET {{baseUrl}}/search?q=blacksmith&mode=literal
+
+### Search - Semantic Mode
+# @name search_semantic
+GET {{baseUrl}}/search?q=blacksmith&mode=semantic
+
+### Search - Limited Results
+# @name search_limited
+GET {{baseUrl}}/search?q=blacksmith&k=5
+
+### Search - Type Filter
+# @name search_type_filter
+GET {{baseUrl}}/search?q=smith&types=npc,location
+
+### Search - Time Filter
+# @name search_time_filter
+GET {{baseUrl}}/search?q=blacksmith&since=2025-01-01T00:00:00Z
+
+### Search - Full Featured
+# @name search_full
+GET {{baseUrl}}/search?q=blacksmith&mode=hybrid&k=10&types=npc,location,lore&since=2025-01-01T00:00:00Z

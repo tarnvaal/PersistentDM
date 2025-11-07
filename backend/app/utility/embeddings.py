@@ -74,6 +74,11 @@ class EmbeddingModelSingleton:
             )
         return cls._instance
 
+    @classmethod
+    def is_initialized(cls) -> bool:
+        """Check if the singleton has been initialized."""
+        return cls._instance is not None
+
 
 def get_embedding_model(device: str | None = None) -> EmbeddingModel:
     """Return the already-initialized singleton. Raises if not initialized."""

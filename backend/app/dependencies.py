@@ -6,7 +6,9 @@ from .utility.llama import Chatter
 from .utility.embeddings import get_embedding_model, EmbeddingModel
 from .world.memory import WorldMemory
 from .world.conversation_service import ConversationService
+from .world.search_service import SearchService
 from .services.state_service import StateService
+from .config.search_config import SearchConfig
 from .settings import DEFAULT_MODEL_PATH
 
 
@@ -48,3 +50,22 @@ def get_conversation_service(
     world_memory: WorldMemory = Depends(get_world_memory),
 ) -> ConversationService:
     return ConversationService(chatter, world_memory)
+
+
+@lru_cache(maxsize=1)
+def get_search_config() -> SearchConfig:
+    from .config.search_config import SearchConfig
+
+    return SearchConfig()
+
+
+def get_search_service(
+    world_memory: WorldMemory = Depends(get_world_memory),
+    config: SearchConfig = Depends(get_search_config),
+) -> SearchService:
+    embedder = get_embeddings()
+    return SearchService(
+        memory_store=world_memory,
+        embedder=embedder.embed,
+        config=config,
+    )
