@@ -4,7 +4,7 @@ from typing import Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from datetime import datetime
 
-from ..world.search_service import SearchService
+from ..dependencies import get_search_service
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ async def search(
         None,
         description="Only return memories updated after this timestamp (ISO 8601 with timezone)",
     ),
-    search_service: SearchService = Depends(SearchService),
+    search_service=Depends(get_search_service),
 ):
     """Search memories with hybrid ranking."""
     request_id = get_request_id(request)

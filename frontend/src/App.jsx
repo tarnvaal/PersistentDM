@@ -1,5 +1,6 @@
 import { useMemo, useState, useRef, useEffect } from "react";
 import SessionsModal from "./components/SessionsModal.jsx";
+import SearchModal from "./components/SearchModal.jsx";
 
 // Approximate token estimator and sliding-window ingestor
 class TextIngestor {
@@ -113,6 +114,7 @@ function App() {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [savedOpen, setSavedOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [savedIngests, setSavedIngests] = useState([]);
   const [pasteText, setPasteText] = useState("");
   const messagesRef = useRef(null);
@@ -413,6 +415,20 @@ function App() {
                 <polygon points="12 2 2 7 12 12 22 7 12 2" />
                 <polyline points="2 17 12 22 22 17" />
                 <polyline points="2 12 12 17 22 12" />
+              </svg>
+            </button>
+            <button
+              id="btn-search"
+              type="button"
+              className="inline-flex items-center justify-center w-9 h-9 rounded-[10px] border border-[#4a555c] bg-[#1e2a30] text-[#c9d1d9] transition-colors ease-linear hover:bg-[#26343b] hover:border-[#FF6600] hover:text-[#FF6600] active:translate-y-px"
+              aria-label="Search memories"
+              onClick={() => setSearchOpen(true)}
+              title="Search memories"
+            >
+              {/* Magnifying glass icon */}
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
             </button>
           </div>
@@ -1168,6 +1184,13 @@ function App() {
               ]);
             } catch (_) {}
           }}
+        />
+      )}
+      {searchOpen && (
+        <SearchModal
+          apiBase={apiBase}
+          open={searchOpen}
+          onClose={() => setSearchOpen(false)}
         />
       )}
     </main>
