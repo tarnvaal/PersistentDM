@@ -1,11 +1,16 @@
 import time
 import os
 import json
+import logging
 from typing import List, Dict, Any, Tuple, Optional
 from glob import glob
 import uuid
+from threading import RLock
 
 from ..utility.embeddings import dot_sim
+from ..settings import RELATIONSHIP_ORDER, MEMORY_SIMILARITY_THRESHOLD
+
+logger = logging.getLogger(__name__)
 
 
 def _build_memory_text_for_embedding(memory_dict: Dict[str, Any]) -> str:
@@ -43,6 +48,9 @@ def _build_memory_text_for_embedding(memory_dict: Dict[str, Any]) -> str:
 
 class WorldMemory:
     def __init__(self, embed_fn):
+        self._lock = RLock()
+        self._embed = embed_fn
+        self._init_state()
         self.memories: List[Dict[str, Any]] = []
         self.embed_fn = embed_fn
         # Lightweight NPC index mapping canonical_name -> snapshot dict
@@ -54,6 +62,28 @@ class WorldMemory:
         self.ingest_memories: Dict[str, List[Dict[str, Any]]] = {}
         self.ingest_names: Dict[str, str] = {}
         self.ingest_npc_index: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    # ---------------- State initialization ----------------
+    def _init_state(self):
+        self.memories = []
+        self.npc_index = {}
+        self.location_graph = WorldGraph()
+        self.ingest_subgraphs = {}
+        self.ingest_memories = {}
+
+    def reset(self):
+        with self._lock:
+            self._init_state()
+
+    def state_summary(self) -> Dict[str, Any]:
+        return {
+            "memories": len(self.memories),
+            "npc_index": len(self.npc_index),
+            "location_graph": len(self.location_graph.locations),
+            "ingest_subgraphs": len(self.ingest_subgraphs),
+            "ingest_memories": len(self.ingest_memories),
+            "ingest_names": len(self.ingest_names),
+        }
 
     # ---------------- Ingest Layer helpers ----------------
     def ensure_ingest_shard(self, ingest_id: str) -> None:
@@ -112,8 +142,9 @@ class WorldMemory:
             path = os.path.join(base, f"{ingest_id}.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
-        except Exception:
+        except Exception as e:
             # Fail-closed: persistence must not crash the server
+            logger.warning(f"Failed to persist ingest shard {ingest_id}: {e}")
             return
 
     def load_ingest_shards(self, base_dir: Optional[str] = None) -> None:
@@ -188,7 +219,8 @@ class WorldMemory:
                 except Exception:
                     # keep loading others
                     continue
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to load ingest shards: {e}")
             return
 
     # ---------------- Ingest NPC index helpers ----------------
@@ -235,10 +267,9 @@ class WorldMemory:
             if isinstance(intent, str) and intent.strip():
                 snapshot["intent"] = intent.strip()
             rel = str(npc.get("relationship_to_player", "")).lower().strip()
-            order = {"hostile": 3, "friendly": 2, "neutral": 1, "unknown": 0}
-            if rel in order:
+            if rel in RELATIONSHIP_ORDER:
                 current = str(snapshot.get("relationship_to_player", "unknown")).lower()
-                if order.get(rel, 0) >= order.get(current, 0):
+                if RELATIONSHIP_ORDER.get(rel, 0) >= RELATIONSHIP_ORDER.get(current, 0):
                     snapshot["relationship_to_player"] = rel
             conf = npc.get("confidence")
             try:
@@ -268,48 +299,49 @@ class WorldMemory:
         mem_type: str,
         npc: Dict[str, Any] | None = None,
         dedupe_check: bool = False,
-        similarity_threshold: float = 0.85,
+        similarity_threshold: float = MEMORY_SIMILARITY_THRESHOLD,
         source_context: Optional[str] = None,
     ) -> str:
         """Store a durable world fact."""
-        # Build entry dict for embedding helper
-        entry_dict = {
-            "summary": summary,
-            "entities": entities,
-            "type": mem_type,
-            "source_context": source_context,
-        }
+        with self._lock:
+            # Build entry dict for embedding helper
+            entry_dict = {
+                "summary": summary,
+                "entities": entities,
+                "type": mem_type,
+                "source_context": source_context,
+            }
 
-        if dedupe_check and self.memories:
+            if dedupe_check and self.memories:
+                combined_text = _build_memory_text_for_embedding(entry_dict)
+                vec = self.embed_fn(combined_text)
+                recent_memories = self.memories[-10:]
+                for memory in recent_memories:
+                    similarity = dot_sim(vec, memory["vector"])
+                    if similarity >= similarity_threshold:
+                        return memory["id"]
+
+            memory_id = str(uuid.uuid4())
             combined_text = _build_memory_text_for_embedding(entry_dict)
             vec = self.embed_fn(combined_text)
-            recent_memories = self.memories[-10:]
-            for memory in recent_memories:
-                similarity = dot_sim(vec, memory["vector"])
-                if similarity >= similarity_threshold:
-                    return memory["id"]
 
-        memory_id = str(uuid.uuid4())
-        combined_text = _build_memory_text_for_embedding(entry_dict)
-        vec = self.embed_fn(combined_text)
+            entry = {
+                "id": memory_id,
+                "summary": summary,
+                "entities": entities,
+                "type": mem_type,
+                "timestamp": time.time(),
+                "vector": vec,
+                # Optional short provenance of what happened when this was saved
+                "source_context": source_context,
+            }
 
-        entry = {
-            "id": memory_id,
-            "summary": summary,
-            "entities": entities,
-            "type": mem_type,
-            "timestamp": time.time(),
-            "vector": vec,
-            # Optional short provenance of what happened when this was saved
-            "source_context": source_context,
-        }
-
-        self.memories.append(entry)
-        # If this is an NPC memory with structured data, upsert the NPC snapshot
-        npc_payload = npc
-        if mem_type == "npc" and isinstance(npc_payload, dict):
-            self._upsert_npc_from_payload(npc_payload, entry)
-        return memory_id
+            self.memories.append(entry)
+            # If this is an NPC memory with structured data, upsert the NPC snapshot
+            npc_payload = npc
+            if mem_type == "npc" and isinstance(npc_payload, dict):
+                self._upsert_npc_from_payload(npc_payload, entry)
+            return memory_id
 
     def retrieve(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -333,89 +365,89 @@ class WorldMemory:
     def _upsert_npc_from_payload(
         self, npc: Dict[str, Any], source_entry: Dict[str, Any]
     ):
-        name = str(npc.get("name", "")).strip()
-        if not name:
-            return
-        cid = self._canonicalize_name(name)
+        with self._lock:
+            name = str(npc.get("name", "")).strip()
+            if not name:
+                return
+            cid = self._canonicalize_name(name)
 
-        now = time.time()
-        snapshot = self.npc_index.get(
-            cid,
-            {
-                "name": name,
-                "aliases": [],
-                "last_seen_location": None,
-                "last_seen_time": 0.0,
-                "intent": None,
-                "relationship_to_player": "unknown",
-                "history": [],
-                "confidence": 0.0,
-            },
-        )
+            now = time.time()
+            snapshot = self.npc_index.get(
+                cid,
+                {
+                    "name": name,
+                    "aliases": [],
+                    "last_seen_location": None,
+                    "last_seen_time": 0.0,
+                    "intent": None,
+                    "relationship_to_player": "unknown",
+                    "history": [],
+                    "confidence": 0.0,
+                },
+            )
 
-        # merge aliases
-        aliases = npc.get("aliases", []) or []
-        if isinstance(aliases, list):
-            existing = {
-                self._canonicalize_name(a): a for a in snapshot.get("aliases", [])
-            }
-            for a in aliases:
-                if isinstance(a, str):
-                    key = self._canonicalize_name(a)
-                    if key not in existing and key != cid:
-                        snapshot["aliases"].append(a)
+            # merge aliases
+            aliases = npc.get("aliases", []) or []
+            if isinstance(aliases, list):
+                existing = {
+                    self._canonicalize_name(a): a for a in snapshot.get("aliases", [])
+                }
+                for a in aliases:
+                    if isinstance(a, str):
+                        key = self._canonicalize_name(a)
+                        if key not in existing and key != cid:
+                            snapshot["aliases"].append(a)
 
-        # update last seen
-        loc = npc.get("last_seen_location")
-        if isinstance(loc, str) and loc.strip():
-            snapshot["last_seen_location"] = loc.strip()
-            snapshot["last_seen_time"] = now
-            # Opportunistically reflect presence in live location graph for fast UI
+            # update last seen
+            loc = npc.get("last_seen_location")
+            if isinstance(loc, str) and loc.strip():
+                snapshot["last_seen_location"] = loc.strip()
+                snapshot["last_seen_time"] = now
+                # Opportunistically reflect presence in live location graph for fast UI
+                try:
+                    loc_name = loc.strip()
+                    node = self.location_graph.locations.get(loc_name)
+                    if node is not None:
+                        cname = cid  # canonicalized NPC name
+                        if cname not in node.npcs_present:
+                            node.npcs_present.append(cname)
+                except Exception as e:
+                    # Never let graph hygiene break memory upserts
+                    logger.debug(f"Failed to update location graph for NPC {cid}: {e}")
+
+            # update intent (replace if provided and non-empty)
+            intent = npc.get("intent")
+            if isinstance(intent, str) and intent.strip():
+                snapshot["intent"] = intent.strip()
+
+            # relationship precedence: hostile > friendly > neutral > unknown
+            rel = str(npc.get("relationship_to_player", "")).lower().strip()
+            if rel in RELATIONSHIP_ORDER:
+                current = str(snapshot.get("relationship_to_player", "unknown")).lower()
+                if RELATIONSHIP_ORDER.get(rel, 0) >= RELATIONSHIP_ORDER.get(current, 0):
+                    snapshot["relationship_to_player"] = rel
+
+            # confidence (max)
+            conf = npc.get("confidence")
             try:
-                loc_name = loc.strip()
-                node = self.location_graph.locations.get(loc_name)
-                if node is not None:
-                    cname = cid  # canonicalized NPC name
-                    if cname not in node.npcs_present:
-                        node.npcs_present.append(cname)
+                cval = float(conf) if conf is not None else 0.0
             except Exception:
-                # Never let graph hygiene break memory upserts
-                pass
+                cval = 0.0
+            try:
+                prev = snapshot.get("confidence", 0.0)
+                prev_f = float(prev) if prev is not None else 0.0
+                snapshot["confidence"] = max(prev_f, cval)
+            except Exception:
+                snapshot["confidence"] = cval
 
-        # update intent (replace if provided and non-empty)
-        intent = npc.get("intent")
-        if isinstance(intent, str) and intent.strip():
-            snapshot["intent"] = intent.strip()
+            # append concise history line
+            history_line = source_entry.get("summary")
+            if isinstance(history_line, str) and history_line:
+                hist = snapshot.get("history", [])
+                hist.append(history_line[:160])
+                snapshot["history"] = hist[-10:]  # cap length
 
-        # relationship precedence: hostile > friendly > neutral > unknown
-        rel = str(npc.get("relationship_to_player", "")).lower().strip()
-        order = {"hostile": 3, "friendly": 2, "neutral": 1, "unknown": 0}
-        if rel in order:
-            current = str(snapshot.get("relationship_to_player", "unknown")).lower()
-            if order.get(rel, 0) >= order.get(current, 0):
-                snapshot["relationship_to_player"] = rel
-
-        # confidence (max)
-        conf = npc.get("confidence")
-        try:
-            cval = float(conf) if conf is not None else 0.0
-        except Exception:
-            cval = 0.0
-        try:
-            prev = snapshot.get("confidence", 0.0)
-            prev_f = float(prev) if prev is not None else 0.0
-            snapshot["confidence"] = max(prev_f, cval)
-        except Exception:
-            snapshot["confidence"] = cval
-
-        # append concise history line
-        history_line = source_entry.get("summary")
-        if isinstance(history_line, str) and history_line:
-            hist = snapshot.get("history", [])
-            hist.append(history_line[:160])
-            snapshot["history"] = hist[-10:]  # cap length
-
-        self.npc_index[cid] = snapshot
+            self.npc_index[cid] = snapshot
 
     def get_relevant_npc_snapshots(
         self, query: str, k: int = 2
@@ -587,9 +619,11 @@ class WorldGraph:
     def __init__(self):
         self.locations: Dict[str, LocationNode] = {}
         self.player_location: Optional[str] = None
+        self._lock = RLock()
 
     def add_location(self, node: LocationNode) -> None:
-        self.locations[node.name] = node
+        with self._lock:
+            self.locations[node.name] = node
 
     def add_connection(
         self,
@@ -598,22 +632,25 @@ class WorldGraph:
         edge_description: str,
         travel_verb: str = "go",
     ) -> None:
-        if from_name in self.locations and to_name in self.locations:
-            self.locations[from_name].connections.append(
-                LocationEdge(
-                    to_location=to_name,
-                    description=edge_description,
-                    travel_verb=travel_verb,
+        with self._lock:
+            if from_name in self.locations and to_name in self.locations:
+                self.locations[from_name].connections.append(
+                    LocationEdge(
+                        to_location=to_name,
+                        description=edge_description,
+                        travel_verb=travel_verb,
+                    )
                 )
-            )
 
     def get_current_location(self) -> Optional[LocationNode]:
-        if not self.player_location:
-            return None
-        return self.locations.get(self.player_location)
+        with self._lock:
+            if not self.player_location:
+                return None
+            return self.locations.get(self.player_location)
 
     def move_player(self, new_location_name: str) -> bool:
-        if new_location_name in self.locations:
-            self.player_location = new_location_name
-            return True
-        return False
+        with self._lock:
+            if new_location_name in self.locations:
+                self.player_location = new_location_name
+                return True
+            return False
