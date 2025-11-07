@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any, Dict, Optional
 
 from ..utility.llama import Chatter
+from ..settings import (
+    MEMORY_K_GENERAL,
+    MEMORY_K_PER_ENTITY,
+    MEMORY_K_PER_TYPE,
+    MEMORY_MIN_TOTAL_SCORE,
+    NPC_K_DEFAULT,
+    NPC_MIN_SCORE,
+    CONFIDENCE_THRESHOLD_MEMORY,
+    CONFIDENCE_THRESHOLD_LOCATION,
+)
 from .memory import WorldMemory
 from .context_builder import (
     format_world_facts,
@@ -12,6 +23,8 @@ from .context_builder import (
     summarize_memory_context,
 )
 from .memory_utils import sanitize_entities
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationService:
@@ -29,7 +42,8 @@ class ConversationService:
                 and p.name == "world_facts"
                 for p in sig.parameters.values()
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to check chatter signature for world_facts: {e}")
             return False
 
     def _maybe_analyze_and_store_memory(
@@ -47,7 +61,8 @@ class ConversationService:
 
         try:
             result: object = analyze(conversation_context)  # runtime-typed
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to analyze conversation for memories: {e}")
             return None
 
         summary: Optional[Dict[str, Any]] = result if isinstance(result, dict) else None
@@ -58,7 +73,7 @@ class ConversationService:
             conf = float(summary.get("confidence", 0.0))
         except Exception:
             conf = 0.0
-        if conf <= 0.6:
+        if conf <= CONFIDENCE_THRESHOLD_MEMORY:
             return None
 
         entities = sanitize_entities(summary.get("entities"))
@@ -78,8 +93,9 @@ class ConversationService:
                 "npc": npc_payload if isinstance(npc_payload, dict) else None,
                 "confidence": conf,
             }
-        except Exception:
+        except Exception as e:
             # Fail-closed; memory storage must not break chats
+            logger.debug(f"Failed to store analyzed memory: {e}")
             return None
 
     def handle_user_message(
@@ -99,16 +115,16 @@ class ConversationService:
                 mem_scored = multi_index_retrieve_with_scores(
                     self.world_memory,
                     user_message,
-                    k_general=8,
-                    k_per_entity=3,
-                    k_per_type=2,
-                    min_total_score=0.25,
+                    k_general=MEMORY_K_GENERAL,
+                    k_per_entity=MEMORY_K_PER_ENTITY,
+                    k_per_type=MEMORY_K_PER_TYPE,
+                    min_total_score=MEMORY_MIN_TOTAL_SCORE,
                 )
                 facts_str = format_world_facts([m["_raw"] for m in mem_scored])
 
                 # Retrieve NPC snapshots with scores and thresholds
                 npc_scored = self.world_memory.get_relevant_npc_snapshots_scored(
-                    user_message, k=2, min_score=0.35
+                    user_message, k=NPC_K_DEFAULT, min_score=NPC_MIN_SCORE
                 )
                 npc_cards = format_npc_cards([n["_raw"] for n in npc_scored])
 
@@ -154,7 +170,8 @@ class ConversationService:
                         for n in npc_scored
                     ],
                 }
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to build context for message: {e}")
                 merged_context = None
                 relevance_payload = None
 
@@ -260,7 +277,7 @@ class ConversationService:
                         conf = float(res.get("confidence", 0.0))
                     except Exception:
                         conf = 0.0
-                    if conf >= 0.7:
+                    if conf >= CONFIDENCE_THRESHOLD_LOCATION:
                         target = str(res.get("target"))
                         if self.world_memory.location_graph.move_player(target):
                             updated = True
@@ -274,7 +291,7 @@ class ConversationService:
                         conf2 = float(res2.get("confidence", 0.0))
                     except Exception:
                         conf2 = 0.0
-                    if conf2 >= 0.7:
+                    if conf2 >= CONFIDENCE_THRESHOLD_LOCATION:
                         # Add locations
                         for node in res2.get("new_locations", []) or []:
                             name = str(node.get("name", "")).strip()
@@ -302,7 +319,8 @@ class ConversationService:
                                     src, dst, edesc
                                 )
                                 updated = True
-        except Exception:
+        except Exception as e:
             # Never let LLM graph/movement updates break the chat
+            logger.debug(f"Failed to update location/graph via LLM: {e}")
             return updated
         return updated

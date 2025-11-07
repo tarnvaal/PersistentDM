@@ -12,6 +12,6 @@ uvicorn==0.38.0
 # ---- Embeddings ----
 sentence-transformers==5.1.2
 
-# ---- (Optional) Testing ----
-# pytest==8.4.2
-# httpx==0.28.1
+# ---- Testing ----
+ pytest==8.4.2
+ httpx==0.28.1

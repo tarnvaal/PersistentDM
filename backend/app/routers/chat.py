@@ -1,10 +1,12 @@
-import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 import json
 from pydantic import BaseModel
 
-from ..dependencies import get_conversation_service, reset_chatter, get_world_memory
+from ..dependencies import get_conversation_service, get_state_service
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -29,31 +31,45 @@ class ClearResponse(BaseModel):
 
 
 @router.post("/clear", response_model=ClearResponse)
-def clear_chat(req: ClearRequest):
+def clear_chat(req: ClearRequest, state_service=Depends(get_state_service)):
     if req.clear:
-        reset_chatter()
-        # Also clear world memory, NPC index, and location graph so the game state resets
-        wm = get_world_memory()
-        wm.memories.clear()
-        wm.npc_index.clear()
-        wm.location_graph.locations.clear()
-        wm.location_graph.player_location = None
-        # Also clear ingest layer in-memory (shards on disk remain untouched)
-        try:
-            wm.ingest_subgraphs.clear()
-        except Exception:
-            pass
-        try:
-            wm.ingest_memories.clear()
-        except Exception:
-            pass
-        try:
-            wm.ingest_names.clear()
-        except Exception:
-            pass
+        # Get state summary before reset for audit logging
+        pre_reset_summary = state_service.get_state_summary()
+
+        # Perform the reset
+        state_service.reset()
+
+        # Audit log the reset
+        logger.info(
+            "State reset performed",
+            action="reset",
+            pre_reset_memories=pre_reset_summary.get("memories", 0),
+            pre_reset_npcs=pre_reset_summary.get("npc_index", 0),
+            pre_reset_locations=pre_reset_summary.get("location_graph", 0),
+            reason="user_requested",
+        )
+
         return ClearResponse(success=True)
     else:
         return ClearResponse(success=False)
+
+
+class StateSummaryResponse(BaseModel):
+    memories: int
+    npc_index: int
+    location_graph: int
+    ingest_subgraphs: int
+    ingest_memories: int
+    ingest_names: int
+
+
+@router.get("/state/summary", response_model=StateSummaryResponse)
+def get_state_summary(state_service=Depends(get_state_service)):
+    """Get a summary of current world state for monitoring/debugging."""
+    summary = state_service.get_state_summary()
+    if "error" in summary:
+        raise HTTPException(status_code=500, detail=summary["error"])
+    return StateSummaryResponse(**summary)
 
 
 @router.post("", response_model=ChatResponse)
@@ -62,9 +78,10 @@ def post_chat(req: ChatRequest, conversation=Depends(get_conversation_service)):
         reply, context, relevance = conversation.handle_user_message(req.message)
         return ChatResponse(reply=reply, context=context, relevance=relevance)
     except Exception as e:
-        expose = os.getenv("PDM_DEBUG_ERRORS", "1") == "1"
+        from ..settings import PDM_DEBUG_ERRORS
+
         detail = {"error": "Internal server error"}
-        if expose:
+        if PDM_DEBUG_ERRORS:
             detail["message"] = str(e)
         raise HTTPException(status_code=500, detail=detail)
 
@@ -76,9 +93,9 @@ def stream_chat(
 ):
     """Server-Sent Events: reply first, then context/relevance, then done.
 
-    Note: This endpoint streams staged results for better UX. It mirrors /chat logic but
-    emits events in order: reply -> meta -> done. Use GET with a query param to support
-    standard EventSource.
+    Note: This endpoint streams staged results for better UX. It uses ConversationService
+    to handle context building and emits events in order: reply -> meta -> done.
+    Use GET with a query param to support standard EventSource.
     """
 
     def sse_event(event: str, payload: dict) -> str:
@@ -86,126 +103,26 @@ def stream_chat(
 
     def generate():
         try:
-            # Build context similarly to ConversationService but inline to stage results
-            conv = conversation
-            supports_context = True
-            try:
-                supports_context = conv._chatter_accepts_world_facts()
-            except Exception:
-                supports_context = True
-
-            merged_context = None
-            relevance_payload = None
-            if supports_context:
-                try:
-                    mem_scored = []
-                    try:
-                        from ..world.context_builder import (
-                            multi_index_retrieve_with_scores,
-                        )
-
-                        mem_scored = multi_index_retrieve_with_scores(
-                            conv.world_memory,
-                            message,
-                            k_general=8,
-                            k_per_entity=3,
-                            k_per_type=2,
-                            min_total_score=0.25,
-                        )
-                    except Exception:
-                        mem_scored = []
-                    facts_str = format_world_facts(
-                        [m.get("_raw", m) for m in mem_scored]
-                    )
-                    npc_scored = conv.world_memory.get_relevant_npc_snapshots_scored(
-                        message, k=2, min_score=0.35
-                    )
-                    npc_cards = format_npc_cards([n.get("_raw", n) for n in npc_scored])
-                    location_str = format_location_context(conv.world_memory)
-                    parts = []
-                    if npc_cards:
-                        parts.append(npc_cards)
-                    if facts_str:
-                        parts.append(facts_str)
-                    if location_str:
-                        parts.append(location_str)
-                    merged_context = "\n\n".join(parts) if parts else None
-
-                    # Add total word count to context
-                    if merged_context:
-                        word_count = len(merged_context.split())
-                        merged_context = (
-                            f"{merged_context}\n\n[Total: {word_count} words]"
-                        )
-                    relevance_payload = {
-                        "memories": [
-                            {
-                                "summary": m.get("summary", ""),
-                                "type": m.get("type", "unknown"),
-                                "entities": m.get("entities", []),
-                                "score": round(float(m.get("total", 0.0)), 2),
-                                "explanation": summarize_memory_context(
-                                    m.get("_raw", {})
-                                ),
-                            }
-                            for m in mem_scored
-                        ],
-                        "npcs": [
-                            {
-                                "name": n.get("name", "Unknown"),
-                                "intent": n.get("intent"),
-                                "last_seen_location": n.get("last_seen_location"),
-                                "relationship_to_player": n.get(
-                                    "relationship_to_player", "unknown"
-                                ),
-                                "score": round(float(n.get("score", 0.0)), 2),
-                            }
-                            for n in npc_scored
-                        ],
-                    }
-                except Exception:
-                    merged_context = None
-                    relevance_payload = None
-
-            # Generate DM reply
-            try:
-                if supports_context and merged_context is not None:
-                    dm_response = conv.chatter.chat(message, world_facts=merged_context)
-                else:
-                    dm_response = conv.chatter.chat(message)
-            except TypeError as e:
-                msg = str(e)
-                if "world_facts" in msg and "unexpected keyword" in msg:
-                    dm_response = conv.chatter.chat(message)
-                else:
-                    raise
+            # Use ConversationService to handle the complete message processing
+            dm_response, merged_context, relevance_payload = (
+                conversation.handle_user_message(message)
+            )
 
             yield sse_event("reply", {"reply": dm_response})
 
-            # Analyze/store memory and emit meta
-            saved = None
-            try:
-                if supports_context:
-                    saved = conv._maybe_analyze_and_store_memory(message, dm_response)
-            except Exception:
-                saved = None
-
+            # Emit meta with context and relevance information
             meta = {"context": merged_context, "relevance": relevance_payload or {}}
-            if meta["relevance"] is not None:
-                meta["relevance"]["saved"] = saved
             yield sse_event("meta", meta)
 
             yield sse_event("done", {"ok": True})
 
-        except Exception:
-            yield sse_event("error", {"error": "Internal server error"})
+        except Exception as e:
+            # Provide more specific error information in debug mode
+            from ..settings import PDM_DEBUG_ERRORS
 
-    # Import functions used above
-    from ..world.context_builder import (
-        format_world_facts,
-        format_npc_cards,
-        format_location_context,
-        summarize_memory_context,
-    )
+            error_detail = {"error": "Internal server error"}
+            if PDM_DEBUG_ERRORS:
+                error_detail["message"] = str(e)
+            yield sse_event("error", error_detail)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
