@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routers.chat import router as chat_router
 from .routers.ingest import router as ingest_router
 from .sessions.router import router as sessions_router
-from .dependencies import get_chatter
+from .dependencies import get_chatter, get_search_service
+from .world.search_service import SearchService
 from .utility.embeddings import EmbeddingModelSingleton
 from .utility.llama import Chatter
 from .logging_config import get_logger, set_request_context, clear_request_context
@@ -30,6 +31,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PersistentDM API", lifespan=lifespan)
+
+# Bind default provider so tests can override `SearchService` directly
+app.dependency_overrides[SearchService] = get_search_service
 
 
 @app.middleware("http")

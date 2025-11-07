@@ -18,6 +18,8 @@ Key Features
 
     Reusable Worlds: You can save and load "shards" of world data (locations, memories) to reuse across different game sessions.
 
+    Memory Search: Query the AI's knowledge base with semantic similarity, literal matching, and recency boosting for debugging and exploration.
+
 Tech Stack
 
     Backend: FastAPI (Python)
@@ -70,3 +72,82 @@ Development Setup
    `./scripts/run.sh`
 
 6. Connect via http://localhost:5174/
+
+
+## Search API
+
+Query the AI's memory database with hybrid ranking that combines semantic similarity, literal substring matching, and recency boosting.
+
+### Endpoint
+
+```
+GET /search?q={query}&mode={mode}&k={limit}&types={types}&since={timestamp}
+```
+
+### Parameters
+
+- `q` (required): Search query string (1-512 characters)
+- `mode` (optional): Search mode - `literal`, `semantic`, or `hybrid` (default: `hybrid`)
+- `k` (optional): Maximum results to return (1-100, default: 10)
+- `types` (optional): Comma-separated memory types to filter by (e.g., `npc,location`)
+- `since` (optional): ISO 8601 timestamp with timezone (e.g., `2025-01-01T00:00:00Z`)
+
+### Response
+
+```json
+{
+  "query": "blacksmith",
+  "mode": "hybrid",
+  "k": 5,
+  "results": [
+    {
+      "item_id": "mem_123",
+      "type": "npc",
+      "text": "The town blacksmith, Rinna...",
+      "score": 0.912,
+      "explanation": {
+        "similarity": 0.83,
+        "literal_boost": 0.2,
+        "recency_bonus": 0.04,
+        "type_bonus": 0.01
+      },
+      "updated_at": "2025-10-01T12:34:56Z",
+      "source": {"shard": "session", "origin": "memory"}
+    }
+  ]
+}
+```
+
+### Configuration
+
+Search behavior can be tuned via environment variables:
+
+```bash
+# Scoring weights
+SEARCH_W_SIM=1.0          # Semantic similarity weight
+SEARCH_W_LITERAL=0.2      # Literal substring boost
+SEARCH_W_REC=0.15         # Recency bonus weight
+SEARCH_W_TYPE=0.05        # Memory type bonus weight
+
+# Recency parameters
+SEARCH_HALF_LIFE_HOURS=72 # Recency half-life in hours
+
+# Type-specific bonuses
+SEARCH_TYPE_BONUS='{"npc": 0.02, "location": 0.01}'
+```
+
+### Examples
+
+```bash
+# Hybrid search (default)
+curl "http://localhost:8000/search?q=blacksmith"
+
+# Literal substring search
+curl "http://localhost:8000/search?q=blacksmith&mode=literal"
+
+# Semantic search only
+curl "http://localhost:8000/search?q=blacksmith&mode=semantic"
+
+# Filter by type and recency
+curl "http://localhost:8000/search?q=smith&types=npc,location&since=2025-01-01T00:00:00Z"
+```
