@@ -319,7 +319,7 @@ def multi_index_retrieve_with_scores(
 
 
 def format_world_facts(
-    memories: List[Dict[str, Any]] | None, char_cap: int = 800
+    memories: List[Dict[str, Any]] | None, char_cap: int = 3000
 ) -> str:
     """Format a compact world facts string for prompt injection."""
     if not memories:

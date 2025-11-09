@@ -586,12 +586,19 @@ class Chatter:
         """Extract up to max_items durable memories from text in one pass.
 
         Returns a list of memory dicts; each has keys summary, entities, type, confidence, optional npc.
+        Each summary is structured as "Factual analysis (what happened); Contextual analysis (why it matters); Time, place, who (when/where/who was involved)"."
         """
         system = (
             "You analyze narrative/game text to extract IMPORTANT persistent facts.\n"
             "Return ONLY a JSON array (max {max_items}) of objects with keys: summary, entities, type, confidence, optional npc.\n"
             "Types: npc|location|item|goal|threat|world_state|other.\n"
             "Preserve named entities (use full proper names when available). Prefer specific, grounded facts.\n"
+            "\n"
+            "CRITICAL: Each summary must be into three sentences:\n"
+            "1. Factual analysis: What happened or what is stated as fact.\n"
+            "2. Contextual analysis: Why it matters, implications, or relationships.\n"
+            "3. Time, place, who: When/where this occurred and who was involved.\n"
+            "\n"
             "If nothing durable, return [].\n\n"
             "Example Input:\n"
             "Context so far:\n"
@@ -602,8 +609,8 @@ class Chatter:
             "Example Output:\n"
             "[\n"
             "  {\n"
-            '    "summary": "Jonathan Harker is traveling from Western Europe to meet Count Dracula in Transylvania on legal business",\n'
-            '    "entities": ["Jonathan Harker", "Count Dracula", "Transylvania"],\n'
+            '    "summary": "Jonathan Harker departed Munich at 8:35PM and arrived in Vienna the following morning, then continued through Buda-Pesth. This journey represents his commitment to fulfilling his legal obligations and meeting his client Count Dracula. The travel occurred in late 19th century Europe, starting in Munich, passing through Vienna and Buda-Pesth, with Jonathan Harker as the sole traveler en route to Transylvania.",\n'
+            '    "entities": ["Jonathan Harker", "Count Dracula", "Transylvania", "Munich", "Vienna", "Buda-Pesth"],\n'
             '    "type": "goal",\n'
             '    "confidence": 0.92,\n'
             '    "npc": null\n'

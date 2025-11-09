@@ -16,6 +16,7 @@ from ..world.memory_utils import sanitize_entities
 from ..world.memory import LocationNode, _build_memory_text_for_embedding
 from ..world.context_builder import summarize_memory_context
 from ..utility.embeddings import dot_sim
+from ..settings import MAX_CHUNK_SIZE
 
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -269,7 +270,7 @@ def stream(
     window_words = 134
     if stride_words_override is not None:
         try:
-            stride_words = max(1, min(5000, int(stride_words_override)))
+            stride_words = max(1, min(MAX_CHUNK_SIZE, int(stride_words_override)))
         except Exception:
             stride_words = max(1, int(stride_tokens / tokens_per_word))
     else:

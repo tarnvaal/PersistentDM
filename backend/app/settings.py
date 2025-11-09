@@ -26,6 +26,9 @@ CONFIDENCE_THRESHOLD_LOCATION = float(os.getenv("CONFIDENCE_THRESHOLD_LOCATION",
 MAX_WORLD_FACTS_WORDS = int(os.getenv("MAX_WORLD_FACTS_WORDS", "2000"))
 MAX_NPC_CARDS = int(os.getenv("MAX_NPC_CARDS", "8"))
 
+# Ingest settings
+MAX_CHUNK_SIZE = int(os.getenv("MAX_CHUNK_SIZE", "12000"))
+
 # Debug settings
 PDM_DEBUG_ERRORS = os.getenv("PDM_DEBUG_ERRORS", "1") == "1"
 
@@ -71,6 +74,7 @@ def get_settings_summary() -> Dict[str, Any]:
         "limits": {
             "max_world_facts_words": MAX_WORLD_FACTS_WORDS,
             "max_npc_cards": MAX_NPC_CARDS,
+            "max_chunk_size": MAX_CHUNK_SIZE,
         },
         "model": {
             "default_path": DEFAULT_MODEL_PATH,
