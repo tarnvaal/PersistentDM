@@ -11,20 +11,20 @@ from typing import Dict, Any
 MEMORY_K_GENERAL = int(os.getenv("MEMORY_K_GENERAL", "8"))
 MEMORY_K_PER_ENTITY = int(os.getenv("MEMORY_K_PER_ENTITY", "3"))
 MEMORY_K_PER_TYPE = int(os.getenv("MEMORY_K_PER_TYPE", "2"))
-MEMORY_MIN_TOTAL_SCORE = float(os.getenv("MEMORY_MIN_TOTAL_SCORE", "0.25"))
-MEMORY_SIMILARITY_THRESHOLD = float(os.getenv("MEMORY_SIMILARITY_THRESHOLD", "0.85"))
+MEMORY_MIN_TOTAL_SCORE = float(os.getenv("MEMORY_MIN_TOTAL_SCORE", "0.65"))
+MEMORY_SIMILARITY_THRESHOLD = float(os.getenv("MEMORY_SIMILARITY_THRESHOLD", "0.80"))
 
 # NPC retrieval settings
 NPC_K_DEFAULT = int(os.getenv("NPC_K_DEFAULT", "2"))
-NPC_MIN_SCORE = float(os.getenv("NPC_MIN_SCORE", "0.35"))
+NPC_MIN_SCORE = float(os.getenv("NPC_MIN_SCORE", "0.55"))
 
 # Confidence thresholds for LLM operations
 CONFIDENCE_THRESHOLD_MEMORY = float(os.getenv("CONFIDENCE_THRESHOLD_MEMORY", "0.6"))
 CONFIDENCE_THRESHOLD_LOCATION = float(os.getenv("CONFIDENCE_THRESHOLD_LOCATION", "0.7"))
 
 # Context building limits
-MAX_WORLD_FACTS_WORDS = int(os.getenv("MAX_WORLD_FACTS_WORDS", "500"))
-MAX_NPC_CARDS = int(os.getenv("MAX_NPC_CARDS", "3"))
+MAX_WORLD_FACTS_WORDS = int(os.getenv("MAX_WORLD_FACTS_WORDS", "2000"))
+MAX_NPC_CARDS = int(os.getenv("MAX_NPC_CARDS", "8"))
 
 # Debug settings
 PDM_DEBUG_ERRORS = os.getenv("PDM_DEBUG_ERRORS", "1") == "1"
