@@ -8,14 +8,14 @@ from typing import Dict, Any
 
 
 # Memory retrieval settings
-MEMORY_K_GENERAL = int(os.getenv("MEMORY_K_GENERAL", "8"))
-MEMORY_K_PER_ENTITY = int(os.getenv("MEMORY_K_PER_ENTITY", "3"))
-MEMORY_K_PER_TYPE = int(os.getenv("MEMORY_K_PER_TYPE", "2"))
-MEMORY_MIN_TOTAL_SCORE = float(os.getenv("MEMORY_MIN_TOTAL_SCORE", "0.65"))
-MEMORY_SIMILARITY_THRESHOLD = float(os.getenv("MEMORY_SIMILARITY_THRESHOLD", "0.80"))
+MEMORY_K_GENERAL = int(os.getenv("MEMORY_K_GENERAL", "25"))
+MEMORY_K_PER_ENTITY = int(os.getenv("MEMORY_K_PER_ENTITY", "5"))
+MEMORY_K_PER_TYPE = int(os.getenv("MEMORY_K_PER_TYPE", "3"))
+MEMORY_MIN_TOTAL_SCORE = float(os.getenv("MEMORY_MIN_TOTAL_SCORE", "0.75"))
+MEMORY_SIMILARITY_THRESHOLD = float(os.getenv("MEMORY_SIMILARITY_THRESHOLD", "0.75"))
 
 # NPC retrieval settings
-NPC_K_DEFAULT = int(os.getenv("NPC_K_DEFAULT", "2"))
+NPC_K_DEFAULT = int(os.getenv("NPC_K_DEFAULT", "3"))
 NPC_MIN_SCORE = float(os.getenv("NPC_MIN_SCORE", "0.55"))
 
 # Confidence thresholds for LLM operations

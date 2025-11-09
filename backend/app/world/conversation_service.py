@@ -20,7 +20,6 @@ from .context_builder import (
     format_world_facts,
     format_npc_cards,
     format_location_context,
-    summarize_memory_context,
 )
 from .memory_utils import sanitize_entities
 
@@ -145,31 +144,10 @@ class ConversationService:
                     word_count = len(merged_context.split())
                     merged_context = f"{merged_context}\n\n[Total: {word_count} words]"
 
-                # Build lightweight relevance payload for UI/debug
-                relevance_payload = {
-                    "memories": [
-                        {
-                            "summary": m.get("summary", ""),
-                            "type": m.get("type", "unknown"),
-                            "entities": m.get("entities", []),
-                            "score": round(float(m.get("total", 0.0)), 2),
-                            "explanation": summarize_memory_context(m.get("_raw", {})),
-                        }
-                        for m in mem_scored
-                    ],
-                    "npcs": [
-                        {
-                            "name": n.get("name", "Unknown"),
-                            "intent": n.get("intent"),
-                            "last_seen_location": n.get("last_seen_location"),
-                            "relationship_to_player": n.get(
-                                "relationship_to_player", "unknown"
-                            ),
-                            "score": round(float(n.get("score", 0.0)), 2),
-                        }
-                        for n in npc_scored
-                    ],
-                }
+                # Build relevance payload with only merged_context
+                relevance_payload = (
+                    {"merged_context": merged_context} if merged_context else None
+                )
             except Exception as e:
                 logger.debug(f"Failed to build context for message: {e}")
                 merged_context = None
