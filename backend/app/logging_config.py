@@ -93,8 +93,9 @@ class StructuredFormatter(logging.Formatter):
         }
 
         # Add structured data if present
-        if hasattr(record, "structured_data"):
-            log_entry.update(record.structured_data)
+        structured_data = getattr(record, "structured_data", None)
+        if structured_data:
+            log_entry.update(structured_data)
 
         # Add exception info if present
         if record.exc_info:

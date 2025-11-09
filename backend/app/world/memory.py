@@ -49,7 +49,6 @@ def _build_memory_text_for_embedding(memory_dict: Dict[str, Any]) -> str:
 class WorldMemory:
     def __init__(self, embed_fn):
         self._lock = RLock()
-        self._embed = embed_fn
         self._init_state()
         self.memories: List[Dict[str, Any]] = []
         self.embed_fn = embed_fn
