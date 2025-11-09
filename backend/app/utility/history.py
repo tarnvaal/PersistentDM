@@ -1,6 +1,7 @@
 # history.py
 from . import message
 from datetime import datetime
+from typing import List, Dict, Any
 
 
 class History:
@@ -48,7 +49,7 @@ class History:
         self.history.append(msg)
         return msg
 
-    def build_context(self) -> str:
+    def build_context(self) -> List[Dict[str, Any]]:
         """
         Build the context of the history.
         """
